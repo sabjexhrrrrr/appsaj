@@ -153,7 +153,7 @@ function plainExcerpt(md, n = 160) {
 const KNOWN = new Set([
   'date', 'title', 'draft', 'font', 'photos', 'area', 'city', 'country', 'country_code', 'lat', 'lon',
   'category', 'rating', 'would_return', 'weather', 'source', 'caption', 'captions', 'stamp',
-  'author', 'director', 'host', 'episode', 'year', 'status', 'recommend', 'quote', 'rewatch', 'suggested_by', 'artist', 'album', 'format', 'pinned', 'creator', 'season', 'network', 'episodes', 'pages', 'page', 'reading_log', 'floppy', 'floppy_journal', 'ordered', 'bought', 'tickets', 'rides', 'gallery', 'theatre', 'invite', 'boarding', 'cinema', 'cloakroom', 'wristband', 'postcard', 'fortune', 'luggage', 'matchbook', 'coaster', 'roomkey', 'flower', 'postcard_scene', 'pitch', 'trailmap', 'parkpass', 'patch', 'summit', 'signpost', 'leaf', 'marshmallow', 'tides', 'compass', 'bookmark', 'librarycard', 'bookplate', 'note', 'popcorn', 'glasses3d', 'rental', 'tvguide', 'remote', 'headphones', 'gig', 'pick', 'setlist', 'busticket', 'coffeering', 'signature', 'bookclub', 'dogear', 'stubpair', 'programme', 'picknmix', 'drivein', 'tally', 'takeaway', 'nospoil', 'battery', 'jcard', 'walkmap', 'napkin', 'vinyllabel', 'mixtape', 'backstage', 'lighter', 'sky', 'diary', 'moodring', 'doodle', 'cootie', 'forecast', 'lyric', 'handstamp', 'glowstick', 'racebib', 'ceremony', 'confetti', 'balloon', 'matchday', 'funfair', 'rosette', 'namebadge', 'sparkler', 'flyer', 'tourtee', 'earplugs', 'drumstick', 'buttonbadge', 'seatplan', 'lozenge', 'masks', 'stageprog', 'comedyticket', 'mic', 'interval', 'operaglasses', 'curtain', 'laughmeter', 'joke', 'custom_keepsakes', 'memory', 'negatives', 'oldprint', 'calendar', 'vhstape', 'envelope', 'thennow', 'rewind', 'skysunrise', 'skygolden', 'skyrainbow', 'skystorm', 'skysnow', 'skystars', 'skymoon', 'skyaurora', 'skyclouds', 'skyfog', 'skyplane', 'skypink', 'workout', 'gympass', 'personalbest', 'dumbbell', 'steps', 'shaker', 'heartrate', 'setsheet', 'medal', 'waterbottle', 'alarmclock', 'riseshine', 'firstcoffee', 'lunchbreak', 'teatime', 'nightowl', 'sleepmask', 'ledclock', 'discaward', 'trophy', 'chartno1', 'winnercard', 'goldmic', 'autograph', 'fanclub', 'jukebox', 'radiorequest', 'magreview', 'yearonrepeat', 'sevenninch', 'profile', 'grid_photo', 'flashcard', 'highlighter', 'pagetabs', 'timetable', 'examslip', 'pomodoro', 'desklamp', 'librarypass', 'grade', 'casecard', 'mindmap', 'revisionlist', 'pencil', 'calculator', 'gradcap', 'diploma', 'stopwatch', 'lecturenotes', 'doordnd', 'readinglist', 'idbadge', 'timecard', 'meetinginvite', 'outofoffice', 'businesscard', 'inboxzero', 'laptop', 'briefcase', 'deskplate', 'stapler', 'paperclips', 'memo', 'wfh', 'tgif', 'deadline', 'employeemonth', 'card', 'ribbon', 'ribbon_style', 'ribbon_colour']);
+  'author', 'director', 'host', 'episode', 'year', 'status', 'recommend', 'quote', 'rewatch', 'suggested_by', 'artist', 'album', 'format', 'pinned', 'friends_only', 'creator', 'season', 'network', 'episodes', 'pages', 'page', 'reading_log', 'floppy', 'floppy_journal', 'ordered', 'bought', 'tickets', 'rides', 'gallery', 'theatre', 'invite', 'boarding', 'cinema', 'cloakroom', 'wristband', 'postcard', 'fortune', 'luggage', 'matchbook', 'coaster', 'roomkey', 'flower', 'postcard_scene', 'pitch', 'trailmap', 'parkpass', 'patch', 'summit', 'signpost', 'leaf', 'marshmallow', 'tides', 'compass', 'bookmark', 'librarycard', 'bookplate', 'note', 'popcorn', 'glasses3d', 'rental', 'tvguide', 'remote', 'headphones', 'gig', 'pick', 'setlist', 'busticket', 'coffeering', 'signature', 'bookclub', 'dogear', 'stubpair', 'programme', 'picknmix', 'drivein', 'tally', 'takeaway', 'nospoil', 'battery', 'jcard', 'walkmap', 'napkin', 'vinyllabel', 'mixtape', 'backstage', 'lighter', 'sky', 'diary', 'moodring', 'doodle', 'cootie', 'forecast', 'lyric', 'handstamp', 'glowstick', 'racebib', 'ceremony', 'confetti', 'balloon', 'matchday', 'funfair', 'rosette', 'namebadge', 'sparkler', 'flyer', 'tourtee', 'earplugs', 'drumstick', 'buttonbadge', 'seatplan', 'lozenge', 'masks', 'stageprog', 'comedyticket', 'mic', 'interval', 'operaglasses', 'curtain', 'laughmeter', 'joke', 'custom_keepsakes', 'memory', 'negatives', 'oldprint', 'calendar', 'vhstape', 'envelope', 'thennow', 'rewind', 'skysunrise', 'skygolden', 'skyrainbow', 'skystorm', 'skysnow', 'skystars', 'skymoon', 'skyaurora', 'skyclouds', 'skyfog', 'skyplane', 'skypink', 'workout', 'gympass', 'personalbest', 'dumbbell', 'steps', 'shaker', 'heartrate', 'setsheet', 'medal', 'waterbottle', 'alarmclock', 'riseshine', 'firstcoffee', 'lunchbreak', 'teatime', 'nightowl', 'sleepmask', 'ledclock', 'discaward', 'trophy', 'chartno1', 'winnercard', 'goldmic', 'autograph', 'fanclub', 'jukebox', 'radiorequest', 'magreview', 'yearonrepeat', 'sevenninch', 'profile', 'grid_photo', 'flashcard', 'highlighter', 'pagetabs', 'timetable', 'examslip', 'pomodoro', 'desklamp', 'librarypass', 'grade', 'casecard', 'mindmap', 'revisionlist', 'pencil', 'calculator', 'gradcap', 'diploma', 'stopwatch', 'lecturenotes', 'doordnd', 'readinglist', 'idbadge', 'timecard', 'meetinginvite', 'outofoffice', 'businesscard', 'inboxzero', 'laptop', 'briefcase', 'deskplate', 'stapler', 'paperclips', 'memo', 'wfh', 'tgif', 'deadline', 'employeemonth', 'menucard', 'winelabel', 'recipecard', 'sugarpacket', 'teabagtag', 'chopsticks', 'bakerybox', 'tablenumber', 'candle', 'housekey', 'planttag', 'knitsquare', 'hotwaterbottle', 'doormat', 'jamjar', 'fridgenote', 'trainticket', 'ferrypass', 'travelpin', 'passportstamp', 'suitcasesticker', 'platform', 'seatres', 'milesign', 'birthdaycard', 'gifttag', 'cakecandle', 'placecard', 'favour', 'bootie', 'partyhat', 'thankyou', 'card', 'ribbon', 'ribbon_style', 'ribbon_colour']);
 
 export function buildPost(type, key, text, tz) {
   const { data, body } = splitFrontMatter(text);
@@ -181,6 +181,8 @@ export function buildPost(type, key, text, tz) {
     draft: data.draft === true,
     // Pinned posts sit at the top of the feed and their section.
     pinned: data.pinned === true,
+    // Only for your friends: never on your own site, and only in your friends' back offices.
+    friends_only: data.friends_only === true,
     // How its card is dressed (one of the card designs; empty: the theme's), and a ribbon of its
     // own: a few words, in one of the ribbon styles, in a colour of its own (or the theme's).
     card: THEME_OPTIONS.card_style.includes(String(data.card ?? '').trim().toLowerCase()) || OWN_CARD.test(String(data.card ?? '').trim()) ? String(data.card).trim().toLowerCase() : '',
@@ -417,6 +419,39 @@ export function buildPost(type, key, text, tz) {
     tgif: keepsake(data.tgif),
     deadline: keepsake(data.deadline),
     employeemonth: keepsake(data.employeemonth),
+    // Everyday life: food and drink, home, travel, celebrations.
+    menucard: keepsake(data.menucard),
+    winelabel: keepsake(data.winelabel),
+    recipecard: keepsake(data.recipecard),
+    sugarpacket: keepsake(data.sugarpacket),
+    teabagtag: keepsake(data.teabagtag),
+    chopsticks: keepsake(data.chopsticks),
+    bakerybox: keepsake(data.bakerybox),
+    tablenumber: keepsake(data.tablenumber),
+    candle: keepsake(data.candle),
+    housekey: keepsake(data.housekey),
+    planttag: keepsake(data.planttag),
+    knitsquare: keepsake(data.knitsquare),
+    hotwaterbottle: keepsake(data.hotwaterbottle),
+    doormat: keepsake(data.doormat),
+    jamjar: keepsake(data.jamjar),
+    fridgenote: keepsake(data.fridgenote),
+    trainticket: keepsake(data.trainticket),
+    ferrypass: keepsake(data.ferrypass),
+    travelpin: keepsake(data.travelpin),
+    passportstamp: keepsake(data.passportstamp),
+    suitcasesticker: keepsake(data.suitcasesticker),
+    platform: keepsake(data.platform),
+    seatres: keepsake(data.seatres),
+    milesign: keepsake(data.milesign),
+    birthdaycard: keepsake(data.birthdaycard),
+    gifttag: keepsake(data.gifttag),
+    cakecandle: keepsake(data.cakecandle),
+    placecard: keepsake(data.placecard),
+    favour: keepsake(data.favour),
+    bootie: keepsake(data.bootie),
+    partyhat: keepsake(data.partyhat),
+    thankyou: keepsake(data.thankyou),
     // Reliving a memory: when it happened (a year, a month or a day), for thoughts and photos.
     memory: type === 'thoughts' || type === 'photos' ? memoryWhen(data.memory) : null,
     // Books: how long it is, where you're up to, and a log of reading sessions
@@ -442,6 +477,58 @@ export function buildPost(type, key, text, tz) {
 
 export function isVisible(post, now = Date.now()) {
   return !post.draft && !post.error && post.ts > 0 && post.ts <= now;
+}
+
+// The planner (planner.md): lists under "## " headings, each with ticked or unticked lines, an
+// optional date to do it by and a note, and any writing in between as the list's notes. A list
+// whose heading ends "(private)" stays in the back office.
+//   ## To do
+//   - [ ] Post the parcel @2026-11-05 — before Friday
+//   - [x] Call Nan
+//   ## Wishes
+//   - [ ] A film camera — the one with the leather strap
+export const PLANNER_MAX_LISTS = 12;
+export const PLANNER_MAX_ITEMS = 80;
+export function parsePlanner(text) {
+  const { body } = splitFrontMatter(text || '');
+  const lists = [];
+  let cur = null;
+  const clean = (s, n) => String(s).replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, n);
+  for (const raw of body.split(/\r?\n/)) {
+    const head = /^##\s+(.+?)\s*$/.exec(raw);
+    if (head) {
+      if (lists.length >= PLANNER_MAX_LISTS) break;
+      let name = head[1];
+      const priv = /\(private\)\s*$/i.test(name);
+      name = clean(name.replace(/\(private\)\s*$/i, ''), 60) || 'List';
+      cur = { name, private: priv, items: [], notes: '' };
+      lists.push(cur);
+      continue;
+    }
+    if (!cur) continue;
+    const m = /^\s*[-*]\s+\[( |x|X)\]\s+(.+)$/.exec(raw);
+    if (m) {
+      if (cur.items.length >= PLANNER_MAX_ITEMS) continue;
+      let t = m[2].trim();
+      let note = '';
+      const split = t.split(/\s+[—–]\s+/);
+      if (split.length > 1) {
+        t = split.shift().trim();
+        note = split.join(' — ').trim();
+      }
+      let due = '';
+      const d = /(?:^|\s)@(\d{4}-\d{2}-\d{2})(?=\s|$)/.exec(t);
+      if (d) {
+        due = d[1];
+        t = (t.slice(0, d.index) + t.slice(d.index + d[0].length)).replace(/\s+/g, ' ').trim();
+      }
+      cur.items.push({ text: clean(t, 200), done: m[1] !== ' ', due, note: clean(note, 300) });
+      continue;
+    }
+    if (cur.notes.length < 4000) cur.notes += raw + '\n';
+  }
+  for (const l of lists) l.notes = l.notes.trim().slice(0, 4000);
+  return lists;
 }
 
 // "- [ ] Name, City (type) — note"  /  "- [x] Name, City"
@@ -499,6 +586,8 @@ export function parseSite(text) {
     // Extra room at the top when opened from a phone's Home Screen ('' as it is).
     top_room: ['some', 'more', 'lots'].includes(String(data.top_room ?? '').trim()) ? String(data.top_room).trim() : '',
     tagline: data.tagline ? String(data.tagline) : '',
+    // Your picture: one of the site's own (by name), or a photo of yours kept with the designs.
+    picture: /^([a-z]{2,20}|design\/[\w.-]{1,80}\.(jpe?g|png|webp|gif))$/i.test(String(data.picture ?? '').trim()) ? String(data.picture).trim() : '',
     about_html: safeMarkdown(body)
   };
 }
@@ -618,7 +707,7 @@ export const EMOJI_LAYOUTS = ['grid', 'scatter', 'big'];
 // Festive days an owner can tick (these match FESTIVALS in public/js/skins.js).
 export const THEME_FESTIVALS = ['lunar_new_year', 'hanami', 'childrens_day', 'dragon_boat', 'tanabata', 'mid_autumn', 'nowruz', 'holi', 'ramadan', 'eid_al_fitr', 'eid_al_adha', 'diwali', 'yalda', 'dia_de_reyes', 'carnival', 'dia_de_muertos', 'st_patricks', 'easter', 'midsummer', 'bonfire_night', 'halloween', 'hanukkah', 'christmas'];
 // Words on buttons that can be renamed (these match LABELS in public/js/skins.js).
-export const THEME_LABELS = ['home', 'thoughts', 'journal', 'atlas', 'friends', 'album', 'more', 'passport', 'wishlist', 'guestbook', 'books', 'films', 'podcasts', 'music', 'tv', 'stats', 'about', 'explore', 'others', 'search', 'leave', 'nudge', 'open_journal', 'read_review', 'visitor', 'come_in'];
+export const THEME_LABELS = ['home', 'thoughts', 'journal', 'atlas', 'friends', 'album', 'more', 'passport', 'wishlist', 'planner', 'guestbook', 'books', 'films', 'podcasts', 'music', 'tv', 'stats', 'about', 'explore', 'others', 'search', 'leave', 'nudge', 'open_journal', 'read_review', 'visitor', 'come_in'];
 // Places the seasons' glass can go (these match GLASS_PLACES in public/js/skins.js).
 export const THEME_GLASS = ['photos', 'thoughts', 'journal', 'passport', 'atlas', 'wishlist', 'guestbook', 'books', 'films', 'podcasts', 'music', 'tv'];
 export const THEME_OPTIONS = {
@@ -628,6 +717,7 @@ export const THEME_OPTIONS = {
   selector: ['bar', 'gradient', 'pointer', 'outline', 'invert'],
   bars: ['glossy', 'flat', 'stripes', 'pixel'],
   corners: ['classic', 'square', 'round'],
+  realism: ['normal', 'extra'],
   density: ['cosy', 'compact', 'roomy'],
   posts: ['cards', 'lines'],
   scrollbar: ['classic', 'themed', 'thin', 'hidden'],
@@ -637,7 +727,7 @@ export const THEME_OPTIONS = {
   header: ['banner', 'card', 'minimal', 'hidden'],
   name_style: ['plain', 'rainbow', 'glitter', 'glow', 'wordart', 'outline', 'chrome'],
   trail: ['none', 'sparkles', 'hearts', 'stars', 'bubbles', 'rainbow', 'pixels'],
-  falling: ['none', 'snow', 'petals', 'hearts', 'stars', 'leaves', 'confetti', 'bubbles', 'sunshine'],
+  falling: ['season', 'none', 'snow', 'petals', 'hearts', 'stars', 'leaves', 'confetti', 'bubbles', 'sunshine'],
   seasons: ['off', 'auto', 'winter', 'spring', 'summer', 'autumn', 'lunar_new_year', 'hanami', 'childrens_day', 'dragon_boat', 'tanabata', 'mid_autumn', 'nowruz', 'holi', 'ramadan', 'eid_al_fitr', 'eid_al_adha', 'diwali', 'yalda', 'dia_de_reyes', 'carnival', 'dia_de_muertos', 'st_patricks', 'easter', 'midsummer', 'bonfire_night', 'halloween', 'hanukkah', 'christmas', 'my_1', 'my_2', 'my_3', 'my_4', 'my_5', 'my_6', 'my_7', 'my_8', 'my_9', 'my_10', 'my_11', 'my_12'],
   hemisphere: ['north', 'south'],
   glass_style: ['season', 'winter', 'spring', 'summer', 'autumn', 'festive', 'gloss'],
@@ -650,9 +740,9 @@ export const THEME_OPTIONS = {
   wall_time: ['day', 'still']
 };
 export const THEME_HIDEABLE = ['lastpost', 'status', 'playing', 'countdown', 'nudge', 'clock', 'traystatus'];
-export const THEME_SECTIONS = ['home', 'thoughts', 'journal', 'atlas', 'friends', 'album', 'more', 'passport', 'wishlist', 'guestbook', 'books', 'films', 'podcasts', 'music', 'tv', 'stats', 'about'];
+export const THEME_SECTIONS = ['home', 'thoughts', 'journal', 'atlas', 'friends', 'album', 'more', 'passport', 'wishlist', 'planner', 'guestbook', 'books', 'films', 'podcasts', 'music', 'tv', 'stats', 'about'];
 // Each app's own look (these match public/js/skins.js).
-export const THEME_APPS = { 'journal': ['paper', 'hand', 'map', 'font'], 'passport': ['paper', 'hand', 'font'], 'atlas': ['map', 'font'], 'wishlist': ['font'], 'guestbook': ['font'], 'books': ['font'], 'films': ['font'], 'podcasts': ['font'], 'music': ['font'], 'tv': ['font'], 'album': ['font'] };
+export const THEME_APPS = { 'journal': ['paper', 'hand', 'map', 'font'], 'passport': ['paper', 'hand', 'font'], 'atlas': ['map', 'font'], 'wishlist': ['font'], 'planner': ['paper', 'hand', 'font'], 'guestbook': ['font'], 'books': ['font'], 'films': ['font'], 'podcasts': ['font'], 'music': ['font'], 'tv': ['font'], 'album': ['font'] };
 export const APP_LOOKS = ['auto', 'original', 'tint', 'custom'];
 export const APP_EXTRAS = { 'paper': ['aged', 'cream', 'white', 'kraft', 'grid', 'dotted'], 'hand': ['caveat', 'gaegu', 'comic', 'typewriter', 'pixel', 'elegant'], 'map': ['classic', 'soft', 'mono', 'sepia', 'night'], 'font': ['own', 'theme', 'classic', 'modern', 'system', 'mono', 'rounded', 'bubbly', 'pixel', 'terminal', 'comic', 'handwritten', 'typewriter', 'elegant'] };
 export const STICKER_SPOTS = ['title', 'corner-bl', 'corner-br', 'profile', 'cards', 'taskbar', 'desktop'];
@@ -732,7 +822,7 @@ export function parseTheme(text) {
       const one = {};
       const charms = [...new Set((Array.isArray(o.charms) ? o.charms : []).map((x) => (THEME_CHARMS.includes(String(x)) && !['none', 'plain'].includes(x) ? String(x) : emojiOnly(x, 1)[0])).filter(Boolean))].slice(0, 8);
       if (charms.length) one.charms = charms;
-      if (THEME_OPTIONS.falling.includes(String(o.falling))) one.falling = String(o.falling);
+      if (THEME_OPTIONS.falling.includes(String(o.falling)) && o.falling !== 'season') one.falling = String(o.falling);
       const where = [...new Set((Array.isArray(o.where) ? o.where : []).map(String).filter((x) => STICKER_SPOTS.includes(x)))];
       if (where.length) one.where = where;
       if (Array.isArray(o.settle)) one.settle = [...new Set(o.settle.map(String).filter((x) => ['bars', 'icons', 'taskbar', 'ground', 'posts', 'menu', 'profile'].includes(x)))];
@@ -762,7 +852,7 @@ export function parseTheme(text) {
       if (!x || typeof x !== 'object' || !okMd(x.from)) return null;
       const what = THEME_CHARMS.includes(String(x.what)) && !['none', 'plain'].includes(x.what) ? String(x.what) : emojiOnly(x.what, 1)[0] || 'twinkle';
       const one = { name: short(String(x.name ?? '').replace(/[<>]/g, ''), 40) || 'My day', from: String(x.from), to: okMd(x.to) ? String(x.to) : String(x.from), what };
-      if (THEME_OPTIONS.falling.includes(String(x.falling)) && x.falling !== 'none') one.falling = String(x.falling);
+      if (THEME_OPTIONS.falling.includes(String(x.falling)) && !['none', 'season'].includes(x.falling)) one.falling = String(x.falling);
       return one;
     })
     .filter(Boolean);
@@ -999,6 +1089,8 @@ export function parseComment(key, text) {
     date: data.date ? String(data.date) : '',
     reply_to: COMMENT_ID.test(String(data.reply_to ?? '')) ? String(data.reply_to) : '',
     reply: data.reply ? String(data.reply).slice(0, 2000) : '',
+    // (From a friend, commenting from their own site: their site's address.)
+    site: /^https?:\/\/[^/\s"'<>]+$/i.test(String(data.site ?? '')) ? String(data.site) : '',
     message: String(body || '').trim().slice(0, 2000)
   };
 }
@@ -1013,4 +1105,38 @@ export function parseGuestbookEntry(key, text) {
     reply: data.reply ? String(data.reply).slice(0, 2000) : '',
     message: String(body || '').trim().slice(0, 2000)
   };
+}
+
+// ---------- the highlights cabinet (highlights.md) ----------
+// Up to five posts on each shelf (places, music, films, TV, podcasts), best first, each with an
+// optional line on why it's there: { places: [{ post: 'places/slug', why: '…' }], … }.
+export const HIGHLIGHT_SHELVES = ['places', 'music', 'films', 'tv', 'podcasts'];
+export const HIGHLIGHTS_PER_SHELF = 5;
+export function parseHighlights(text) {
+  const { data } = splitFrontMatter(text || '');
+  const out = {};
+  for (const shelf of HIGHLIGHT_SHELVES) {
+    const seen = new Set();
+    const list = (Array.isArray(data[shelf]) ? data[shelf] : [])
+      .map((x) => (typeof x === 'string' ? { post: x } : x))
+      .filter((x) => x && typeof x === 'object' && new RegExp(`^${shelf}/[A-Za-z0-9][A-Za-z0-9._-]{0,120}$`).test(String(x.post || '')))
+      .filter((x) => !seen.has(x.post) && seen.add(x.post))
+      .slice(0, HIGHLIGHTS_PER_SHELF)
+      .map((x) => ({ post: String(x.post), why: String(x.why ?? '').replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, 160) }));
+    if (list.length) out[shelf] = list;
+  }
+  return out;
+}
+// What used to be in the cabinet (the room's library keeps them as books): the newest first, each
+// with its shelf's post, its line on why, and when it left.
+export const HIGHLIGHTS_PAST_MAX = 40;
+export function parseHighlightsPast(text) {
+  const { data } = splitFrontMatter(text || '');
+  const seen = new Set();
+  return (Array.isArray(data.past) ? data.past : [])
+    .map((x) => (typeof x === 'string' ? { post: x } : x))
+    .filter((x) => x && typeof x === 'object' && new RegExp(`^(${HIGHLIGHT_SHELVES.join('|')})/[A-Za-z0-9][A-Za-z0-9._-]{0,120}$`).test(String(x.post || '')))
+    .filter((x) => !seen.has(x.post) && seen.add(x.post))
+    .slice(0, HIGHLIGHTS_PAST_MAX)
+    .map((x) => ({ post: String(x.post), why: String(x.why ?? '').replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, 160), until: /^\d{4}-\d{2}-\d{2}$/.test(String(x.until || '')) ? String(x.until) : '' }));
 }

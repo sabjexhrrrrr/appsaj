@@ -84,7 +84,7 @@ function fromSettings(st) {
 // theme.md as text: colours, emoji and lists in quotes or as JSON (which is valid YAML).
 function themeText(file) {
   const lines = Object.entries(file).filter(([, v]) => v && (!Array.isArray(v) || v.length)).map(([k, v]) => `${k}: ${typeof v === 'object' || k === 'emoji' || k === 'tab_icon' || /^#/.test(v) ? JSON.stringify(v) : v}`);
-  return `---\n${lines.join('\n')}\n---\nThe site's theme. Change it under Themes in the back office.\n`;
+  return `---\n${lines.join('\n')}\n---\nThe site's theme. Change it under Themes in the Control Panel.\n`;
 }
 // Reads a theme file written as above (or by hand, as simple "key: value" lines).
 function readThemeText(text) {
@@ -141,9 +141,15 @@ export function viewThemes(ctx) {
   const frameBox = h('div', { class: 'tm-frame-box ' + device }, frame);
   const settings = () => ({ ...themeFile(draft), picture: draft.picture, pictureUrl: draft.blob || undefined, night_preview: draft.night_theme ? nightPreview : undefined, season_preview: seasonPreview || undefined });
   let timer;
+  // On the site itself (owner mode): no miniature, the real site wears it as you choose.
+  const live = ctx.live || null;
   const preview = () => {
     clearTimeout(timer);
     timer = setTimeout(() => {
+      if (live) {
+        if (draft) live.apply(settings(), structure());
+        return;
+      }
       if (!draft || !frame.isConnected) return;
       try {
         sessionStorage.setItem('skin-preview', JSON.stringify({ ...settings(), pictureUrl: undefined }));
@@ -238,6 +244,13 @@ export function viewThemes(ctx) {
     if (frame.contentDocument?.readyState === 'complete') reloadIfNeeded();
   };
   redraw();
+  if (live) {
+    // (Leaving without saving puts the saved theme back on.)
+    live.onLeave(() => unsaved && draft);
+    wrap.classList.add('tm-live');
+    wrap.append(h('p', { class: 'hint tm-live-hint' }, 'Your site wears each choice as you make it. Visitors see nothing until you save.'), controls);
+    return wrap;
+  }
   wrap.append(
     h('div', null, h('h2', { class: 'section-title' }, 'Themes'), h('p', { class: 'hint' }, 'Dress the whole site in your own style, down to the last detail: colours, wallpaper, fonts, bars and corners, how posts sit, the menu, sounds, charms, stickers, effects, the browser tab’s icon, a look for after dark, and even the mouse pointer. Visitors can still switch to dark mode.')),
     h('div', { class: 'tm-layout' }, previewBox, controls)
@@ -366,7 +379,7 @@ function themeControls(ctx, saved, redraw, preview) {
       h('p', { class: 'hint' }, 'Like the classic sky: a warm morning, the day as it is, a golden evening and a starry night, by each visitor’s clock. In dark mode it’s always night.')
     ]],
     words: ['Fonts', () => [opt('font', { font: true }), opt('title_font', { font: true }), opt('text_size')]],
-    shapes: ['Bars & corners', () => [opt('bars'), opt('corners'), h('p', { class: 'hint' }, 'Bar styles show in light mode; dark mode keeps its own dark bars.')]],
+    shapes: ['Bars, corners & depth', () => [opt('bars'), opt('corners'), h('p', { class: 'hint' }, 'Bar styles show in light mode; dark mode keeps its own dark bars.'), opt('realism'), h('p', { class: 'hint' }, 'Extra real gives everything a material and lets the light fall on it: grain in the paper and cards, glazed bars that catch the light, buttons that stand up and press in, windows with weight and soft shadows, a little film grain over the screen. It works with any theme, festive day or dark mode, in their own colours.')]],
     cards: ['Post cards', () => [
       cardChoice(d, t, redraw),
       cardMaker(d, t, redraw),
@@ -427,7 +440,7 @@ function themeControls(ctx, saved, redraw, preview) {
     h(
       'div',
       { class: 'row tm-savebar' + (changed ? ' unsaved' : '') },
-      changed ? h('span', { class: 'tm-unsaved', role: 'status' }, 'Not saved yet: only the preview has changed.') : null,
+      changed ? h('span', { class: 'tm-unsaved', role: 'status' }, ctx.live ? 'Not saved yet: only you can see it.' : 'Not saved yet: only the preview has changed.') : null,
       h('button', { type: 'button', class: 'btn go', disabled: !changed, onclick: (e) => save(ctx, saved, e.currentTarget, redraw) }, 'Save the theme'),
       h('button', { type: 'button', class: 'btn', disabled: history.length < 2, title: 'Step back one change', onclick: () => {
         history = history.slice(0, -1);
@@ -436,7 +449,7 @@ function themeControls(ctx, saved, redraw, preview) {
       } }, '↶ Undo'),
       h('button', { type: 'button', class: 'btn', title: 'A whole new look, every part of it at random: keep pressing until you love one (Undo goes back)', onclick: () => { draft = surprise(d); ownOpen = true; pictureSets = null; redraw(); } }, '🎲 Surprise me'),
       d.theme !== 'classic' || PARTS.some((k) => d[k]) || d.stickers.length ? h('button', { type: 'button', class: 'btn', onclick: () => { draft = blank(); redraw(); } }, 'Back to Classic') : null,
-      changed ? h('button', { type: 'button', class: 'btn', onclick: () => { draft = null; history = []; unsaved = false; ctx.go(); } }, 'Discard changes') : null
+      changed ? h('button', { type: 'button', class: 'btn', onclick: () => { draft = null; history = []; unsaved = false; ctx.live?.restore(); ctx.go(); } }, 'Discard changes') : null
     )
   ];
 }

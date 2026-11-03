@@ -497,7 +497,7 @@ function recolour(rgb, a, T, ctx) {
   return null;
 }
 
-const SHEETS = ['base.css', 'xp.css', 'desktop.css', 'mac.css', 'android.css', 'album.css', 'dark.css', 'leather.css'];
+const SHEETS = ['base.css', 'xp.css', 'desktop.css', 'mac.css', 'android.css', 'album.css', 'dark.css', 'leather.css', 'planner.css'];
 const LEATHER_SEL = /leather|spread\.paged|\.dw-leather/;
 const SHORTHANDS = ['background', 'border', 'border-top', 'border-right', 'border-bottom', 'border-left', 'border-color', 'outline', 'box-shadow', 'text-shadow'];
 const BG_PROPS = /^(background|--)/;
@@ -505,8 +505,9 @@ const BG_PROPS = /^(background|--)/;
 function ruleCss(rule, T, sheetName) {
   const style = rule.style;
   const sel = rule.selectorText;
-  const inLeather = sheetName === 'leather.css';
-  if (inLeather && !LEATHER_SEL.test(sel)) return '';
+  // (The planner is leather all over, like the journal's covers.)
+  const inLeather = sheetName === 'leather.css' || sheetName === 'planner.css';
+  if (sheetName === 'leather.css' && !LEATHER_SEL.test(sel)) return '';
   const ctx = { noLift: sheetName === 'dark.css' || /data-theme="dark"/.test(sel), leather: inLeather && T.leather };
   const props = new Map();
   for (let i = 0; i < style.length; i++) {
@@ -660,7 +661,7 @@ export const GLASS_PLACES = {
   journal: { name: 'Places journal', kind: 'corner', sel: ['[data-app="journal"] .page'] },
   passport: { name: 'Passport', kind: 'corner', sel: ['.passport-page'] },
   atlas: { name: 'Atlas', kind: 'corner', sel: ['.atlas-map-frame'] },
-  wishlist: { name: 'Wishlist', kind: 'card', sel: ['.wish'] },
+  wishlist: { name: 'Trips wishlist', kind: 'card', sel: ['.wish'] },
   guestbook: { name: 'Guestbook', kind: 'card', sel: ['.gb-entry'] },
   books: { name: 'Bookshelf', kind: 'item', sel: ['.book-cover'] },
   films: { name: 'Cinema', kind: 'item', sel: ['.ticket'] },
@@ -713,6 +714,7 @@ export const OPTIONS = {
   selector: { name: 'Highlight', choices: { bar: 'Solid bar', gradient: 'Gradient bar', pointer: 'Pointer', outline: 'Outline', invert: 'Inverted' } },
   bars: { name: 'Title bars', choices: { glossy: 'Glossy', flat: 'Flat', stripes: 'Striped', pixel: 'Pixel steps' } },
   corners: { name: 'Corners', choices: { classic: 'Classic', square: 'Square', round: 'Round' } },
+  realism: { name: 'Realism', choices: { normal: 'As it is', extra: 'Extra real: textures, depth, nothing flat' } },
   density: { name: 'Spacing', choices: { cosy: 'Cosy', compact: 'Compact', roomy: 'Roomy' } },
   posts: { name: 'Posts in the feed', choices: { cards: 'Cards', lines: 'A list with lines' } },
   scrollbar: { name: 'Scroll bars', choices: { classic: 'Usual', themed: 'In the theme’s colours', thin: 'Thin', hidden: 'Hidden' } },
@@ -722,7 +724,9 @@ export const OPTIONS = {
   header: { name: 'Profile header', choices: { banner: 'Banner', card: 'Card', minimal: 'Minimal', hidden: 'Hidden' } },
   name_style: { name: 'Your name', choices: { plain: 'Plain', rainbow: 'Rainbow', glitter: 'Glitter', glow: 'Glow', wordart: 'WordArt', outline: 'Outline', chrome: 'Chrome' } },
   trail: { name: 'Pointer trail (computers)', choices: TRAILS },
-  falling: { name: 'Falling over the page', choices: FALLING },
+  // ("With the season" lets a season or festive day bring its own gentle fall; Nothing means
+  // nothing at all, whatever the date.)
+  falling: { name: 'Falling over the page', choices: { season: 'With the season or festive day', ...Object.fromEntries(Object.entries(FALLING).map(([k, v]) => [k, k === 'none' ? 'Nothing at all' : v])) } },
   seasons: { name: 'Seasons & festive days', choices: { off: 'Off', auto: 'Automatic, by the date', winter: 'Winter', spring: 'Spring', summer: 'Summer', autumn: 'Autumn', lunar_new_year: 'Lunar New Year', hanami: 'Cherry blossom', childrens_day: 'Children’s Day', dragon_boat: 'Dragon Boat Festival', tanabata: 'Tanabata', mid_autumn: 'Mid-Autumn Festival', nowruz: 'Nowruz', holi: 'Holi', ramadan: 'Ramadan', eid_al_fitr: 'Eid al-Fitr', eid_al_adha: 'Eid al-Adha', diwali: 'Diwali', yalda: 'Yalda Night', dia_de_reyes: 'Día de Reyes', carnival: 'Carnival', dia_de_muertos: 'Día de Muertos', st_patricks: 'St Patrick’s Day', easter: 'Easter', midsummer: 'Midsummer', bonfire_night: 'Bonfire Night', halloween: 'Halloween', hanukkah: 'Hanukkah', christmas: 'Christmas', ...Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`my_${i + 1}`, `My day ${i + 1}`])) } },
   hemisphere: { name: 'Where the seasons are', choices: { north: 'North of the equator', south: 'South of the equator' } },
   glass_style: { name: 'Glass', choices: { season: 'With the season or festive day', winter: 'Frost', spring: 'Petals and bloom', summer: 'Sun flare', autumn: 'Raindrops and a leaf', festive: 'Sparkles', gloss: 'Plain glass' } },
@@ -1000,7 +1004,7 @@ const dayNumber = (date) => Math.floor((date - new Date(date.getFullYear(), 0, 0
 // Parts that can be left out: of the profile header, and of the taskbar's tray.
 export const HIDEABLE = { lastpost: 'Last post date', status: 'Status', playing: 'Now playing', countdown: 'Countdown', nudge: 'Nudge button', clock: 'Clock (taskbar)', traystatus: 'Status (taskbar, computers)' };
 // The sections, for the main menu's order and for hiding ones you don't use.
-export const SECTIONS = { home: 'Home', thoughts: 'Thoughts', journal: 'Places', atlas: 'Map', friends: 'Friends', album: 'Photos', more: 'Dumps & lists', passport: 'Passport', wishlist: 'Wishlist', guestbook: 'Guestbook', books: 'Books', films: 'Films', podcasts: 'Podcasts', music: 'Music', tv: 'TV', stats: 'Travel stats', about: 'About' };
+export const SECTIONS = { home: 'Home', thoughts: 'Thoughts', journal: 'Places', atlas: 'Map', friends: 'Friends', album: 'Photos', more: 'Dumps & lists', passport: 'Passport', wishlist: 'Trips wishlist', planner: 'Planner', guestbook: 'Guestbook', books: 'Books', films: 'Films', podcasts: 'Podcasts', music: 'Music', tv: 'TV', stats: 'Travel stats', about: 'About' };
 export const DEFAULT_MENU = ['home', 'thoughts', 'journal', 'atlas', 'friends'];
 export const FONT_FAMILIES = {
   classic: '',
@@ -1042,11 +1046,11 @@ export const postFontAttrs = (post) => (post?.font && OPTIONS.font.choices[post.
 // Every section's name (in the menus, on the desktop icons and in the Explore menu) and the
 // site's buttons can be renamed. Left empty, each keeps its usual words.
 export const LABELS = {
-  home: 'Home', thoughts: 'Thoughts', journal: 'Places', atlas: 'Map', friends: 'Friends', album: 'Photos', more: 'Dumps & lists', passport: 'Passport', wishlist: 'Wishlist', guestbook: 'Guestbook', books: 'Books', films: 'Films', podcasts: 'Podcasts', music: 'Music', tv: 'TV', stats: 'Travel stats', about: 'About',
+  home: 'Home', thoughts: 'Thoughts', journal: 'Places', atlas: 'Map', friends: 'Friends', album: 'Photos', more: 'Dumps & lists', passport: 'Passport', wishlist: 'Trips wishlist', planner: 'Planner', guestbook: 'Guestbook', books: 'Books', films: 'Films', podcasts: 'Podcasts', music: 'Music', tv: 'TV', stats: 'Travel stats', about: 'About',
   explore: 'Explore', others: 'Others', search: 'Search', leave: 'Leave', nudge: 'Nudge', open_journal: 'Open in journal', read_review: 'Read the review', visitor: 'Visitor', come_in: 'Tap to come in'
 };
 export const LABEL_GROUPS = [
-  ['Sections', ['home', 'thoughts', 'journal', 'atlas', 'friends', 'album', 'more', 'passport', 'wishlist', 'guestbook', 'books', 'films', 'podcasts', 'music', 'tv', 'stats', 'about']],
+  ['Sections', ['home', 'thoughts', 'journal', 'atlas', 'friends', 'album', 'more', 'passport', 'wishlist', 'planner', 'guestbook', 'books', 'films', 'podcasts', 'music', 'tv', 'stats', 'about']],
   ['Buttons', ['explore', 'others', 'search', 'leave', 'nudge', 'open_journal', 'read_review', 'visitor', 'come_in']]
 ];
 export function cleanLabels(v) {
@@ -1071,7 +1075,8 @@ export const APPS = {
   journal: { name: 'Places journal', era: 'leather', extras: ['paper', 'hand', 'map', 'font'] },
   passport: { name: 'Passport', era: 'leather', extras: ['paper', 'hand', 'font'] },
   atlas: { name: 'Atlas', era: 'mac', extras: ['map', 'font'] },
-  wishlist: { name: 'Wishlist', era: 'mac', extras: ['font'] },
+  wishlist: { name: 'Trips wishlist', era: 'mac', extras: ['font'] },
+  planner: { name: 'Planner', era: 'planner', extras: ['paper', 'hand', 'font'] },
   guestbook: { name: 'Guestbook', era: 'android', extras: ['font'] },
   books: { name: 'Bookshelf', era: 'shelf', extras: ['font'] },
   films: { name: 'Cinema', era: 'cinema', extras: ['font'] },
@@ -1159,9 +1164,9 @@ export const APP_EXTRAS = {
   // Its own era's lettering, the theme's font, or any of the fonts.
   font: { name: 'Font', choices: { own: 'Its own', theme: 'The theme’s', ...OPTIONS.font.choices } }
 };
-const ERA_SHEETS = { mac: ['mac.css'], android: ['android.css'], album: ['album.css'], shelf: ['shelves.css'], cinema: ['shelves.css'], tape: ['shelves.css'], record: ['shelves.css'], crt: ['shelves.css'] };
+const ERA_SHEETS = { planner: ['planner.css'], mac: ['mac.css'], android: ['android.css'], album: ['album.css'], shelf: ['shelves.css'], cinema: ['shelves.css'], tape: ['shelves.css'], record: ['shelves.css'], crt: ['shelves.css'] };
 // Rules for an era's windows that live in desktop.css.
-const ERA_DESKTOP = { mac: /mac|menubar/, android: /droid|android/, album: /al-bar|album/, shelf: /shelf/, cinema: /marquee|cinema/, tape: /deck|tape/, record: /hifi|record/, crt: /tv-|crt/ };
+const ERA_DESKTOP = { planner: /pln-/, mac: /mac|menubar/, android: /droid|android/, album: /al-bar|album/, shelf: /shelf/, cinema: /marquee|cinema/, tape: /deck|tape/, record: /hifi|record/, crt: /tv-|crt/ };
 const HAND_FONTS = { gaegu: "'Gaegu', cursive", comic: "'Comic Neue', 'Comic Sans MS', sans-serif", typewriter: "'Special Elite', monospace", pixel: "'Pixelify Sans', monospace", elegant: "'Libre Baskerville', serif" };
 const PAPERS = {
   cream: { base: '#f8f0dc', mottle: 'none' },
@@ -1575,10 +1580,10 @@ export function applySkin(settings, doc = document) {
   settings ||= {};
   // (The back office's preview can ask to see the night look whatever the time.)
   const dark = settings.night_theme && (settings.night_preview ?? isNight());
-  if (doc === document && settings.night_theme && settings.night_preview == null) {
-    clearTimeout(nightTimer);
-    nightTimer = setTimeout(() => applySkin(settings, doc), untilSwitch());
-  }
+  // (A theme put on replaces the last one's switch between day and night: otherwise a theme
+  // you've moved on from could come back at the next sunset or sunrise.)
+  if (doc === document) clearTimeout(nightTimer);
+  if (doc === document && settings.night_theme && settings.night_preview == null) nightTimer = setTimeout(() => applySkin(settings, doc), untilSwitch());
   const eff = dark ? nightSettings(settings) : settings;
   const t = resolveSkin(eff);
   if (dark) t.night = true;
@@ -1605,8 +1610,9 @@ export function applySkin(settings, doc = document) {
   let extras = [];
   if (look) {
     const fall = look.noFall ? '' : festival ? look.falling || (look.quiet || look.own || !season ? '' : lookOf(season, t).falling) : look.falling;
-    // (Something you've chosen to fall yourself stays; the season only adds its drawing.)
-    if (t.falling === 'none' && fall) {
+    // (Something you've chosen to fall yourself stays, and so does Nothing; only "With the
+    // season" lets the season or the day bring its own, gently.)
+    if (t.falling === 'season' && fall) {
       t.falling = fall;
       t.gentle = true;
     }
@@ -1614,6 +1620,7 @@ export function applySkin(settings, doc = document) {
     const what = look.charms[dayNumber(now) % look.charms.length];
     extras = (look.where || ['corner-br']).map((where, i) => ({ what: where === 'cards' || where === 'title' ? look.charms[(dayNumber(now) + i) % look.charms.length] : what, where, size: where === 'desktop' ? 'l' : 'm', tilt: where === 'corner-bl' ? -6 : 0, x: 86, y: 78 }));
   }
+  if (t.falling === 'season') t.falling = 'none';
   // (For Floppy, who dresses for the day: see helper.js.)
   // (Floppy dresses for the time of year even when the site's seasons are off.)
   const floppySeason = season || seasonOf(now, south);
@@ -1652,6 +1659,12 @@ export function applySkin(settings, doc = document) {
   // The other settings: rules in skins.css follow these marks on the page.
   for (const k of Object.keys(OPTIONS)) root.dataset['sk' + k.replace(/(^|_)(\w)/g, (m, u, ch) => ch.toUpperCase())] = t[k];
   root.dataset.skHide = t.hide.join(' ');
+  // Extra real: the grain that paper, card and keepsakes are given (see real.css).
+  if (t.realism === 'extra' && !doc.getElementById('real-defs')) {
+    const holder = doc.createElement('div');
+    holder.innerHTML = '<svg id="real-defs" width="0" height="0" aria-hidden="true" style="position:absolute;width:0;height:0"><filter id="real-grain" x="0" y="0" width="100%" height="100%" color-interpolation-filters="sRGB"><feTurbulence type="fractalNoise" baseFrequency=".8" numOctaves="3" seed="7" result="n"/><feColorMatrix in="n" type="matrix" values=".3 0 0 0 .81  .3 0 0 0 .8  .3 0 0 0 .77  0 0 0 0 1" result="g"/><feComposite in="g" in2="SourceAlpha" operator="in" result="gin"/><feBlend in="SourceGraphic" in2="gin" mode="multiply"/></filter></svg>';
+    doc.body.append(holder.firstChild);
+  }
   let style = doc.getElementById('skin-css');
   if (!style) {
     style = doc.createElement('style');

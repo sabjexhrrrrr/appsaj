@@ -17,7 +17,8 @@ const DESKTOP_ICONS = [
   ['album', 'Photo album', 'di-album'],
   ['more', 'Photos & lists', 'di-photos'],
   ['passport', 'Passport', 'di-passport'],
-  ['wishlist', 'Wishlist', 'di-wish'],
+  ['wishlist', 'Trips Wishlist', 'di-wish'],
+  ['planner', 'Planner', 'di-planner'],
   ['books', 'Bookshelf', 'di-books'],
   ['films', 'Cinema', 'di-films'],
   ['podcasts', 'Podcasts', 'di-podcasts'],
@@ -38,12 +39,19 @@ export function startDesktop(root, data) {
   const icons = h('div', { class: 'desk-icons', role: 'list' });
 
   // ---- icons ----
-  const { hidden } = menuOf(data);
-  for (const [id, usual, cls] of DESKTOP_ICONS) {
-    const label = word(id, usual);
-    if (id === 'stats' && !data.stats) continue;
-    // Sections the theme leaves out of the menus have no icon either.
-    if (hidden.has(id)) continue;
+  // (Drawn again when what's shown changes: signed in, say, your Friends and Planner appear.)
+  let iconSet = '';
+  const drawIcons = () => {
+    const { hidden } = menuOf(data);
+    const shown = DESKTOP_ICONS.filter(([id]) => !(id === 'stats' && !data.stats) && !hidden.has(id));
+    const now = JSON.stringify(shown.map(([id, usual]) => [id, word(id, usual)]));
+    if (now === iconSet) return;
+    iconSet = now;
+    icons.replaceChildren();
+    for (const [id, usual, cls] of shown) iconFor(id, word(id, usual), cls);
+  };
+  const iconFor = (id, label, cls) => {
+    // (Sections the theme leaves out of the menus have no icon either.)
     const btn = h('button', { type: 'button', class: 'desk-icon', role: 'listitem', title: `Open ${label}` }, h('span', { class: 'dock-icon ' + cls, 'aria-hidden': 'true' }), h('span', { class: 'desk-label' }, label));
     btn.addEventListener('dblclick', () => go('#/' + (id === 'home' ? '' : id)));
     btn.addEventListener('click', (e) => {
@@ -52,7 +60,8 @@ export function startDesktop(root, data) {
       if (e.pointerType === 'touch' || e.detail === 0) go('#/' + (id === 'home' ? '' : id));
     });
     icons.append(btn);
-  }
+  };
+  drawIcons();
 
   function go(hashStr) {
     if (location.hash === hashStr || (hashStr === '#/' && (location.hash === '' || location.hash === '#/'))) open(hashStr);
@@ -74,6 +83,7 @@ export function startDesktop(root, data) {
     else if (era === 'tape') bar = h('div', { class: 'wbar deck-bar' }, h('span', { class: 'lcd' }, title.toUpperCase()), min, max, close);
     else if (era === 'record') bar = h('div', { class: 'wbar hifi-bar' }, h('span', { class: 'hifi-dial' }, title), min, max, close);
     else if (era === 'album') bar = h('div', { class: 'wbar al-bar' }, h('span', { class: 'al-bar-title' }, title), min, max, close);
+    else if (era === 'planner') bar = h('div', { class: 'wbar pln-bar' }, h('span', { class: 'pln-bar-title' }, title), min, max, close);
     else if (era === 'crt') bar = h('div', { class: 'wbar tv-bar' }, h('span', { class: 'tv-channel' }, h('span', { class: 'tv-led', 'aria-hidden': 'true' }, 'CH 03'), title), min, max, close);
     else bar = h('div', { class: 'wbar droid-bar' }, h('span', { class: 'droid-icon', html: ICON.book }), h('span', { class: 'droid-title' }, title), min, close);
     const body = h('div', { class: 'wbody' });
@@ -230,6 +240,8 @@ export function startDesktop(root, data) {
     hideStart();
     hideContext();
     if (show) {
+      // (Drawn afresh each time: the latest posts, and whose menu it is.)
+      startMenu.replaceChildren(...startMenuParts(data, { onScreensaver: () => { hideStart(); screensaver.start(); } }));
       startMenu.hidden = false;
       startBtn.classList.add('pressed');
       startBtn.setAttribute('aria-expanded', 'true');
@@ -303,8 +315,22 @@ export function startDesktop(root, data) {
     { class: 'taskbar' },
     startBtn,
     tasks,
-    h('span', { class: 'tray' }, h('span', { class: 'tray-status', title: [PRESENCE[data.site.presence]?.[0], data.site.status].filter(Boolean).join(' · ') }, presenceDot(data.site), data.site.status ? withEmoticons(data.site.status, 14) : PRESENCE[data.site.presence]?.[0]), mute, clock)
+    h('span', { class: 'tray' }, h('span', { class: 'tray-status' }), mute, clock)
   );
+  // The words on the Explore button and your status in the tray: drawn again whenever the site
+  // changes (a new theme's words, a new status), so nothing keeps an old look until a reload.
+  const paintBar = () => {
+    const label = word('explore', 'Explore');
+    const words = [...startBtn.childNodes].find((n) => n.nodeType === 3);
+    if (words && words.textContent !== label) words.textContent = label;
+    const st = taskbar.querySelector('.tray-status');
+    const title = [PRESENCE[data.site.presence]?.[0], data.site.status].filter(Boolean).join(' · ');
+    if (st.dataset.was === title) return;
+    st.dataset.was = title;
+    st.title = title;
+    st.replaceChildren(presenceDot(data.site), ...[data.site.status ? withEmoticons(data.site.status, 14) : PRESENCE[data.site.presence]?.[0]].flat().filter(Boolean));
+  };
+  paintBar();
 
   // ---- balloon: the newest post ----
   const newest = data.posts[0];
@@ -320,7 +346,7 @@ export function startDesktop(root, data) {
     );
   }
 
-  desk.append(icons, layer, ctxMenu, startMenu, balloon, taskbar);
+  desk.append(...[icons, layer, ctxMenu, startMenu, balloon, taskbar].filter(Boolean));
   root.replaceChildren(desk);
 
   // ---- screensaver ----
@@ -341,8 +367,18 @@ export function startDesktop(root, data) {
     open,
     // New posts arrived: each open window that's at the top is drawn again with them (one you're
     // scrolled down in is left alone, and shows them next time it changes).
-    refresh() {
-      for (const [id, w] of wins) if (w.body.scrollTop < 80 && [...w.body.querySelectorAll('*')].every((x) => x.scrollTop < 80)) render(w, id, w.param);
+    // (`all`: every window, wherever it's scrolled to, as when the owner changes something.)
+    refresh(all = false) {
+      drawIcons();
+      paintBar();
+      for (const [id, w] of wins)
+        if (all) {
+          // (Kept where you were in it.)
+          const at = w.body.scrollTop;
+          render(w, id, w.param);
+          w.body.scrollTop = at;
+        }
+      else if (w.body.scrollTop < 80 && [...w.body.querySelectorAll('*')].every((x) => x.scrollTop < 80)) render(w, id, w.param);
     },
     welcomeDone() {
       busy(900);

@@ -1,8 +1,8 @@
 // Friends: two copies of the site (this one, and a second on TEST_BASE2) become buddies with a
-// friend code, follow each other's posts, and refuse anyone else. Following only: no messages.
+// friend code, follow each other's posts, send each other notes, and refuse anyone else.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import { test, report, assert, eq, launch, close, adminPage, api, putFile, publicData, overview, PHOTOS, BASE, chromium } from './lib.mjs';
+import { test, report, assert, eq, launch, close, adminPage, api, putFile, publicData, overview, PHOTOS, BASE, chromium, openTab } from './lib.mjs';
 
 const BASE2 = process.env.TEST_BASE2 || 'http://localhost:8801';
 async function api2(p, opts = {}) {
@@ -19,6 +19,15 @@ async function until(fn, what, ms = 15000) {
     await new Promise((r) => setTimeout(r, 250));
   }
   assert(false, what);
+}
+async function assertThrows(fn, what) {
+  let threw = false;
+  try {
+    await fn();
+  } catch {
+    threw = true;
+  }
+  assert(threw, what);
 }
 const post_ = (fn, p, body) => fn(p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
 const b64url = (buf) => Buffer.from(buf).toString('base64url');
@@ -76,7 +85,7 @@ await test('pasting a friend code makes you buddies, both ways', async () => {
   // A code's secret alone doesn't open the feed: only a hello with it does.
   eq((await signed(BASE2, 'GET', '/api/friends/feed', BASE, codeSecret)).status, 403, 'the code’s secret');
   const page = await adminPage();
-  await page.locator('.admin-tabs button', { hasText: 'Friends' }).click();
+  await openTab(page, 'Friends');
   await page.waitForSelector('.pal-win');
   await page.locator('button', { hasText: 'Add a friend' }).click();
   await page.getByRole('textbox', { name: 'Your friend’s code' }).fill(code);
@@ -145,7 +154,7 @@ await test('their posts show up (not drafts), with photos through your own site'
   const feed = (await api('friends')).friends[0].cache.feed;
   eq(feed.posts.map((p) => p.title), ['Harbour walk'], 'only the published post');
   const page = await adminPage();
-  await page.locator('.admin-tabs button', { hasText: 'Friends' }).click();
+  await openTab(page, 'Friends');
   await page.waitForSelector('.fr-feed .fr-post');
   const card = page.locator('.fr-feed .fr-post').first();
   assert((await card.innerText()).includes('Harbour walk'), 'post in the feed');
@@ -158,7 +167,7 @@ await test('their posts show up (not drafts), with photos through your own site'
   const ok = await page.waitForFunction(() => { const img = document.querySelector('.fr-photos img'); return img.complete && img.naturalWidth > 0; }, null, { timeout: 10000 }).then(() => true, () => false);
   assert(ok, 'the photo loads');
   // And in the notifications.
-  await page.locator('.admin-tabs button.tab-bell').click();
+  await openTab(page, 'Notifications');
   await page.waitForSelector('.note-friendpost');
   assert((await page.locator('.note-friendpost').first().innerText()).includes('Harbour walk'), 'notification');
   await page.locator('.note-friendpost button', { hasText: 'See it' }).first().click();
@@ -170,7 +179,11 @@ await test('their posts show up (not drafts), with photos through your own site'
   eq(bad.status, 404, 'odd photo names refused');
 });
 
-await test('your site has a Friends tab with their posts, unless you turn it off', async () => {
+await test('your site has a Friends tab with their posts if you choose (to start with, they’re just for you)', async () => {
+  const before = await publicData();
+  eq([before.buddies, before.friendPosts, before.friendsTab], [[], [], false], 'to start with, visitors see nothing of your friends');
+  eq((await api('friends')).visibility, 'off', 'only you');
+  await post_(api, 'friends/settings', { visibility: 'all' });
   const d = await publicData();
   eq(d.buddies.map((x) => [x.name, x.url, x.presence]), [['Lina Lounge', BASE2, 'busy']], 'buddies shown');
   eq(d.friendPosts.map((p) => [p.title, p.friend.name]), [['Harbour walk', 'Lina Lounge']], 'their posts');
@@ -208,6 +221,29 @@ await test('your site has a Friends tab with their posts, unless you turn it off
   assert(!(await overview()).files.some((f) => f.key.startsWith('data/_')), 'friends files never listed');
 });
 
+await test('a friends-only post: not on their site, nor on yours; only in your back office', async () => {
+  const at = new Date(Date.now() - 5 * 3600e3).toISOString().slice(0, 16).replace('T', ' ');
+  await fetch(`${BASE2}/admin/api/upload?key=thoughts/just-us/c.jpg`, { method: 'PUT', body: fs.readFileSync(PHOTOS[0]) });
+  await fetch(`${BASE2}/admin/api/file?key=thoughts/just-us.md`, { method: 'PUT', body: `---\ndate: ${at}\ntitle: Just for friends\nfriends_only: true\nphotos: [c.jpg]\n---\nSmall news.\n` });
+  const theirs = await (await fetch(`${BASE2}/api/all?nocache=${Date.now()}`)).json();
+  assert(!theirs.posts.some((p) => p.title === 'Just for friends'), 'not on their own site');
+  eq((await signed(BASE2, 'GET', '/api/friends/media?key=' + encodeURIComponent('thoughts/just-us/c.jpg'), FAKE, secret)).status, 200, 'its photo is shared with friends');
+  await post_(api, 'friends/refresh');
+  const mine = (await api('friends')).friends[0].cache.feed.posts.find((p) => p.title === 'Just for friends');
+  assert(mine && mine.friends_only, 'in my feed from them, marked');
+  const d = await publicData();
+  assert(!d.friendPosts.some((p) => p.title === 'Just for friends'), 'not on my site’s Friends tab');
+  eq((await fetch(BASE + '/friends-media/localhost_8801/thoughts/just-us/c.jpg')).status, 404, 'its photo isn’t for my visitors');
+  const page = await adminPage();
+  await openTab(page, 'Friends');
+  const card = page.locator('.fr-feed .fr-post', { hasText: 'Just for friends' });
+  await card.waitFor();
+  assert((await card.innerText()).includes('Friends only'), 'marked in the back office');
+  eq(await card.locator('.fr-open').count(), 0, 'no link to a page that isn’t public');
+  assert(!page.errors.length, page.errors.join('; '));
+  await page.close();
+});
+
 await test('you choose who sees your friends, and friends choose whether you can show their posts', async () => {
   const photo = (await publicData()).friendPosts[0].photos[0];
   // Just the friends list: no posts, no photos, no Friends tab.
@@ -220,7 +256,7 @@ await test('you choose who sees your friends, and friends choose whether you can
   d = await publicData();
   eq([d.buddies, d.friendPosts, d.friendsTab], [[], [], false], 'nothing at all');
   const page = await adminPage();
-  await page.locator('.admin-tabs button', { hasText: 'Friends' }).click();
+  await openTab(page, 'Friends');
   await page.waitForSelector('.fr-privacy');
   assert(await page.locator('.fr-vis input[value="off"]').isChecked(), 'the back office shows the choice');
   await page.locator('.fr-vis', { hasText: 'Everyone' }).click();
@@ -243,6 +279,175 @@ await test('you choose who sees your friends, and friends choose whether you can
   eq((await api('friends')).visibility, 'off', 'old off');
   await post_(api, 'friends/settings', { showOnSite: true });
   eq((await api('friends')).visibility, 'all', 'old on');
+});
+
+await test('signed in: their posts in your Home, a dot on Friends, and comments that go straight on', async () => {
+  await post_(api, 'friends/settings', { visibility: 'off' });
+  const pub = await publicData();
+  eq([pub.friendPosts, pub.friendsTab], [[], false], 'visitors: nothing of theirs');
+  const browser = await chromium.launch();
+  const p = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  p.errors = [];
+  p.on('pageerror', (e) => p.errors.push(e.message));
+  p.on('dialog', (dl) => dl.accept());
+  await p.addInitScript(() => sessionStorage.setItem('entered', '1'));
+  try {
+    await p.goto(BASE + '/?owner=1#/');
+    await p.waitForSelector('.okit-plus');
+    // In your Home, as on their site, with who it's from on top; friends-only ones marked.
+    const harbour = p.locator('.ff-in-home[data-friend-post$="|places/harbour"]');
+    await harbour.waitFor();
+    assert((await harbour.locator('.ff-from').innerText()).includes('Lina Lounge'), 'who it’s from');
+    const only = p.locator('.ff-in-home', { hasText: 'Just for friends' });
+    assert((await only.innerText()).includes('friends only'), 'a friends-only post, marked');
+    eq(await harbour.locator('.okit-more').count(), 0, 'not taken for one of yours');
+    // Something new: a dot on Friends.
+    await p.waitForSelector('.okit-ndot');
+    eq(await p.locator('.okit-ndot').first().innerText(), '2', 'two new posts');
+    // Comment on theirs: it goes straight on at their site.
+    await harbour.locator('.okit-talk-btn').click();
+    await harbour.locator('.okit-talk textarea').fill('Lovely gulls!');
+    await harbour.locator('.okit-talk .okit-btn.go', { hasText: 'Post' }).click();
+    await p.waitForFunction(() => /Posted on their site/.test(document.querySelector('.okit-toast')?.textContent || ''));
+    const again = p.locator('.ff-in-home[data-friend-post$="|places/harbour"]');
+    await p.waitForFunction(() => /1 comment/.test(document.querySelector('.ff-in-home[data-friend-post$="|places/harbour"] .okit-talk-btn')?.textContent || ''));
+    assert(!(await again.locator('.okit-talk').isHidden()), 'still open after the page redraws');
+    assert((await again.locator('.okit-talk-item').innerText()).includes('You'), 'yours, marked');
+    const theirs = await (await fetch(`${BASE2}/api/all?nocache=${Date.now()}`)).json();
+    const c = theirs.posts.find((x) => x.slug === 'harbour').comments;
+    eq(c.map((x) => [x.name, x.site, x.message]), [['Sam', BASE, 'Lovely gulls!']], 'on their site, under your name, linking to yours');
+    eq((await api2('overview')).pendingComments.length, 0, 'not waiting for approval');
+    // Their visitors' comments still wait.
+    const v = await (await fetch(`${BASE2}/api/comment`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ post: 'places/harbour', name: 'Visitor', message: 'Hi there' }) })).json();
+    eq(v.pending, true, 'a visitor’s comment waits');
+    eq(await again.locator('.okit-talk-item .okit-btn.link').count(), 0, 'no replying to yourself');
+    // Once they approve it, you see it, and can answer it.
+    const waiting = (await api2('overview')).pendingComments[0];
+    await post_(api2, `move?key=${encodeURIComponent(waiting.key)}&to=${encodeURIComponent(waiting.key.replace('comments-pending/', 'comments/'))}`);
+    await until(async () => (await api('overview')).friendsMine.posts.find((x) => x.id === 'places/harbour').comments.length === 2, 'their approved comment reaches you');
+    await p.reload();
+    const fresh = p.locator('.ff-in-home[data-friend-post$="|places/harbour"]');
+    await fresh.locator('.okit-talk-btn', { hasText: '2 comments' }).click();
+    await fresh.locator('.okit-talk-item', { hasText: 'Visitor' }).locator('.okit-btn.link', { hasText: 'Reply' }).click();
+    await fresh.locator('.okit-talk-item textarea').fill('And the chips.');
+    await fresh.locator('.okit-talk-item .okit-btn.go').click();
+    await p.waitForFunction(() => /3 comments/.test(document.querySelector('.ff-in-home[data-friend-post$="|places/harbour"] .okit-talk-btn')?.textContent || ''));
+    const after = await (await fetch(`${BASE2}/api/all?nocache=${Date.now()}`)).json();
+    const cs = after.posts.find((x) => x.slug === 'harbour').comments;
+    eq(cs.find((x) => x.message === 'And the chips.').reply_to, cs.find((x) => x.name === 'Visitor').id, 'a reply, under the comment it answers');
+    // Friends: only you see it (it says so), and opening it clears the dot.
+    await p.goto(BASE + '/?owner=1#/friends');
+    await p.waitForSelector('.feed.ff .okit-note');
+    assert((await p.locator('.okit-note').innerText()).includes('Only you'), 'only you');
+    await p.waitForTimeout(400);
+    eq(await p.locator('.okit-ndot').count(), 0, 'dot cleared');
+    await p.goto(BASE + '/?owner=1#/');
+    await p.waitForSelector('.ff-in-home');
+    await p.waitForTimeout(400);
+    eq(await p.locator('.okit-ndot').count(), 0, 'and stays cleared');
+    // On a computer, the Friends icon on the desktop (only there while you're signed in) has it.
+    const dp = await browser.newPage({ viewport: { width: 1280, height: 860 } });
+    await dp.addInitScript(() => sessionStorage.setItem('entered', '1'));
+    await dp.goto(BASE + '/#/');
+    await dp.waitForSelector('.desk-icon');
+    eq(await dp.locator('.desk-icon .di-friends').count(), 0, 'visitors: no Friends icon');
+    await dp.goto(BASE + '/?owner=1#/');
+    await dp.addInitScript(() => localStorage.removeItem('okit-friends-seen'));
+    await dp.reload();
+    await dp.waitForSelector('.desk-icon .di-friends .okit-ndot');
+    await dp.close();
+    // View as a visitor: none of it.
+    await p.locator('.okit-me').first().click();
+    await p.locator('.okit-menu button', { hasText: 'View as a visitor' }).click();
+    await p.waitForSelector('.okit-preview');
+    await p.waitForTimeout(400);
+    eq(await p.locator('.ff-in-home').count(), 0, 'no friends’ posts for visitors');
+    assert(!p.errors.length, p.errors.join('; '));
+  } finally {
+    await browser.close();
+  }
+  // Mixing them into Home is yours to turn off.
+  eq((await post_(api, 'friends/settings', { inHome: false })).inHome, false, 'not in Home');
+  eq((await api('overview')).friendsMine.inHome, false, 'told to the site');
+  await post_(api, 'friends/settings', { inHome: true, visibility: 'all' });
+});
+
+await test('notes between friends: the newest pops up, the rest wait in Mail; only for the one it’s to', async () => {
+  // Not from just anyone.
+  eq((await fetch(`${BASE2}/api/friends/note`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Friend-From': BASE }, body: '{"text":"hi"}' })).status, 403, 'unsigned: refused');
+  // Two notes from Sam to Lina.
+  await post_(api, 'mail/send', { friend: 'localhost_8801', text: 'Fancy a walk on Saturday?' });
+  await post_(api, 'mail/send', { friend: 'localhost_8801', text: 'Bring the camera!\nAnd snacks.' });
+  const lina = await api2('mail');
+  eq([lina.unread, lina.notes.map((n) => [n.name, n.text, n.out || false])], [2, [['Sam', 'Bring the camera!\nAnd snacks.', false], ['Sam', 'Fancy a walk on Saturday?', false]]], 'in Lina’s mail, newest first');
+  eq((await api('mail')).notes.filter((n) => n.out).length, 2, 'Sam keeps a copy of what he sent');
+  assert(!JSON.stringify(await (await fetch(`${BASE2}/api/all?nocache=${Date.now()}`)).json()).includes('Fancy a walk'), 'never on the site');
+  await assertThrows(() => post_(api, 'mail/send', { friend: 'localhost_8801', text: '   ' }), 'an empty note isn’t sent');
+  const browser = await chromium.launch();
+  try {
+    // Lina, on a computer: the newest pops up over the tray; the other is in Mail.
+    const p = await browser.newPage({ viewport: { width: 1280, height: 860 } });
+    p.errors = [];
+    p.on('pageerror', (e) => p.errors.push(e.message));
+    await p.addInitScript(() => sessionStorage.setItem('entered', '1'));
+    await p.goto(BASE2 + '/?owner=1#/');
+    const pop = p.locator('.okit-mailpop.balloon');
+    await pop.waitFor();
+    const said = await pop.innerText();
+    assert(said.includes('Bring the camera') && !said.includes('Fancy a walk') && said.includes('1 more'), 'only the newest: ' + said);
+    await p.waitForFunction(() => [...document.querySelectorAll('.okit-mailbtn')].some((b) => b.offsetParent && b.querySelector('.okit-badge').textContent === '2'));
+    await pop.locator('button', { hasText: 'Read it' }).click();
+    await p.waitForSelector('.okit-mailwin .ml-read');
+    assert((await p.locator('.ml-read').innerText()).includes('Bring the camera'), 'open in Mail');
+    eq(await p.locator('.ml-row').count(), 2, 'both in the inbox');
+    eq(await p.locator('.ml:not(.narrow) .ml-side').count(), 1, 'side by side on a computer');
+    await p.waitForFunction(() => document.querySelector('.okit-mailbtn .okit-badge')?.textContent === '1');
+    await p.locator('.ml-read button', { hasText: 'Reply' }).click();
+    await p.locator('.ml-compose textarea').fill('Yes! See you at ten.');
+    await p.locator('.ml-compose button', { hasText: 'Send' }).click();
+    await p.waitForFunction(() => /Sent to Sam/.test(document.querySelector('.okit-toast')?.textContent || ''));
+    // Only once: it doesn't pop up again next time.
+    await p.reload();
+    await p.waitForSelector('.okit-mailbtn');
+    await p.waitForTimeout(1500);
+    eq(await p.locator('.okit-mailpop').count(), 0, 'popped once');
+    assert(!p.errors.length, p.errors.join('; '));
+    // Sam, on a phone: a banner along the top; Mail one thing at a time.
+    const q = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+    q.errors = [];
+    q.on('pageerror', (e) => q.errors.push(e.message));
+    await q.addInitScript(() => sessionStorage.setItem('entered', '1'));
+    await q.goto(BASE + '/?owner=1#/');
+    const banner = q.locator('.okit-mailpop.banner');
+    await banner.waitFor();
+    assert((await banner.innerText()).includes('See you at ten'), 'Lina’s reply');
+    await q.waitForTimeout(500);
+    const box = await banner.boundingBox();
+    assert(box.y >= 0 && box.y < 60 && box.x >= 0 && box.x + box.width <= 390, 'along the top, within the screen: ' + JSON.stringify(box));
+    await banner.locator('.mp-x').click();
+    await q.locator('.okit-mailbtn').first().click();
+    await q.waitForSelector('.ml.narrow .ml-row');
+    eq(await q.locator('.ml-pane').isVisible(), false, 'the list first');
+    await q.locator('.ml-row').first().click();
+    await q.waitForSelector('.ml.narrow.reading .ml-read');
+    eq(await q.locator('.ml-side').isVisible(), false, 'then the note on its own');
+    await q.locator('.ml-read .ml-back').click();
+    await q.waitForSelector('.ml.narrow:not(.reading) .ml-row');
+    // From the Friends tab: a note to a buddy.
+    await q.keyboard.press('Escape');
+    await q.goto(BASE + '/?owner=1#/friends');
+    await q.locator('.okit-note-btn').first().click();
+    await q.waitForSelector('.ml-compose select');
+    eq(await q.locator('.ml-compose select').inputValue(), 'localhost_8801', 'to them');
+    assert(!q.errors.length, q.errors.join('; '));
+  } finally {
+    await browser.close();
+  }
+  eq((await api('mail')).notes.find((n) => !n.out).reply_to, lina.notes[0].id, 'a reply, to the note it answers');
+  // Deleting one.
+  const id = (await api2('mail')).notes[0].id;
+  await post_(api2, 'mail/delete', { id });
+  assert(!(await api2('mail')).notes.some((n) => n.id === id), 'deleted');
 });
 
 await test('a friend\'s new post reaches your site within moments, and an open page picks it up', async () => {
@@ -416,7 +621,7 @@ await test('your site keeps its address, and friends follow when it moves', asyn
   eq([back.url, back.aliases], [BASE, [NEW]], 'followed back');
   // The back office, opened at another address, offers to move there.
   const page = await adminPage(NEW);
-  await page.locator('.admin-tabs button', { hasText: 'Friends' }).click();
+  await openTab(page, 'Friends');
   await page.waitForSelector('.fr-address');
   await page.locator('.fr-move button', { hasText: 'Move my site to' }).click();
   await page.waitForFunction(() => /Moved, and your friend knows/.test(document.body.innerText));

@@ -1,11 +1,14 @@
 // What each section shows. The same renderers fill a phone screen or a desktop window.
 import { pagedSpread } from './journal-pages.js';
+import { pictureHtml, hasPicture } from './pictures.js';
+import { notifyButton } from './push-client.js';
 import { ABOUT } from './floppy-lines.js';
 import { floppySvg } from './helper.js';
 import { statusBlock, nudgeButton, presenceDot } from './statusbar.js';
 import { withEmoticons } from './emoticons.js';
 import { h, esc, iconEl, ICON, niceDate, monthYear, catColor, catLabel, CATEGORIES, storage, postForm, bringIntoView } from './util.js';
 import { mountMap } from './maps.js';
+import { atlasBoard } from './atlas.js';
 import { INK_DEFS, stampSvg, passportStamps, stampLook } from './stamps.js';
 import { sound } from './sound.js';
 import { SHELF_TYPES, shelfCard, shelfApp, inFeed, SHELF_ICON } from './shelves.js';
@@ -15,9 +18,12 @@ import { customMakers } from './keepsake-maker.js';
 import { thoughtMakers, memoryRibbon } from './thought-keepsakes.js';
 import { musicMakers } from './music-keepsakes.js';
 import { studyMakers } from './study-keepsakes.js';
+import { lifeMakers } from './life-keepsakes.js';
 import { albumApp } from './album.js';
-import { friendsApp } from './friends-feed.js';
+import { friendsApp, friendPost } from './friends-feed.js';
 import { dressCard, profileDecor } from './card-dress.js';
+import { cabinetEntrance } from './cabinet.js';
+import { plannerApp } from './planner.js';
 import { commentLink, commentsBlock, commentsButton } from './comments.js';
 import { activeSkin, resolveSkin, word, postFontAttrs } from './skins.js';
 
@@ -34,7 +40,8 @@ const SECTION_INFO = {
   album: { label: 'Photos', long: 'Photo album', href: '#/album', sub: 'Every photo, by date', swatch: 'album' },
   more: { label: 'Dumps', long: 'Photo dumps & lists', href: '#/more', sub: 'Top 5s, quotes', swatch: 'film' },
   passport: { label: 'Passport', href: '#/passport', sub: 'Leather journal', swatch: 'leather' },
-  wishlist: { label: 'Wishlist', href: '#/wishlist', sub: 'Retro Mac', swatch: 'mac' },
+  wishlist: { label: 'Trips', long: 'Trips wishlist', href: '#/wishlist', sub: 'Places I want to go', swatch: 'mac' },
+  planner: { label: 'Planner', href: '#/planner', sub: 'To-dos, wishes and notes', swatch: 'planner' },
   guestbook: { label: 'Guestbook', href: '#/guestbook', sub: 'Retro Android', swatch: 'android' },
   books: { label: 'Books', long: 'Bookshelf', href: '#/books', sub: 'Book reviews', swatch: 'shelf' },
   films: { label: 'Films', long: 'Cinema', href: '#/films', sub: 'Film reviews', swatch: 'cinema' },
@@ -44,7 +51,7 @@ const SECTION_INFO = {
   stats: { label: 'Stats', long: 'Travel stats', href: '#/stats', sub: 'From the flight log', swatch: 'xp' },
   about: { label: 'About', href: '#/about', swatch: 'about' }
 };
-const OTHERS_ORDER = ['album', 'passport', 'wishlist', 'guestbook', 'more', 'books', 'films', 'podcasts', 'music', 'tv', 'stats', 'about', 'thoughts', 'journal', 'atlas', 'friends'];
+const OTHERS_ORDER = ['album', 'passport', 'wishlist', 'planner', 'guestbook', 'more', 'books', 'films', 'podcasts', 'music', 'tv', 'stats', 'about', 'thoughts', 'journal', 'atlas', 'friends'];
 // The main bar's sections (in order) and the ones left out of the menus.
 export function menuOf(data) {
   const t = activeSkin() || resolveSkin(data.theme || {});
@@ -52,6 +59,8 @@ export function menuOf(data) {
   if (!data.stats) hidden.add('stats');
   // Friends' posts kept off the site (in the back office): no Friends tab, anywhere.
   if (data.friendsTab === false) hidden.add('friends');
+  // No lists in the planner (or only private ones): no Planner.
+  if (!(data.planner || []).length) hidden.add('planner');
   return { main: t.menu.filter((id) => !hidden.has(id)), hidden };
 }
 export const sectionLabel = (id) => word(id, SECTION_INFO[id]?.label || id);
@@ -129,12 +138,16 @@ export function card(post, open = false) {
   // (A post written in a font of its own.)
   for (const [k, v] of Object.entries(postFontAttrs(post))) el?.setAttribute(k, v);
   if (post.type === 'thoughts') el?.classList.add('card-is-thought');
+  // (Which post it is, for the owner's tools when you're signed in.)
+  if (el && !post.friend) el.dataset.post = `${post.type}/${post.slug}`;
   // (Its design, ribbons and corner mark; and in the feed, how many comments it has.)
   dressCard(el, post, open);
   if (!open) {
     const link = commentLink(post);
     if (link && el) el.append(link);
   }
+  // (In the highlights cabinet: a little gold rosette, leading to it.)
+  if (post.highlight && el && !post.friend_look) el.append(h('a', { class: 'card-rosette', href: '#/highlights', title: 'In my highlights' }, post.highlight === 1 ? '№ 1 in my highlights' : 'In my highlights'));
   return el;
 }
 function cardInner(post, open) {
@@ -211,11 +224,11 @@ function profileTile(data, here = false) {
     { class: 'profile-tile' },
     decor.bunting,
     // Your picture opens your profile: the About page, with your photo grid after the bio.
-    here ? h('span', { class: 'avatar', html: ICON.person() }) : h('a', { class: 'avatar', href: '#/about', title: 'Profile', 'aria-label': `${data.site.owner || data.site.name}: profile`, html: ICON.person() }),
+    here ? h('span', { class: 'avatar' + (hasPicture(data.site.picture) ? ' has-pic' : ''), html: pictureHtml(data.site.picture) }) : h('a', { class: 'avatar' + (hasPicture(data.site.picture) ? ' has-pic' : ''), href: '#/about', title: 'Profile', 'aria-label': `${data.site.owner || data.site.name}: profile`, html: pictureHtml(data.site.picture) }),
     h(
       'div',
       { class: 'profile-text' },
-      h('div', { class: 'profile-name' }, h('strong', null, data.site.owner || data.site.name), nudgeButton(data.site)),
+      h('div', { class: 'profile-name' }, h('strong', null, data.site.owner || data.site.name), nudgeButton(data.site), notifyButton(data)),
       h('div', { class: 'profile-sub' }, latest ? h('span', { class: 'small' }, 'Last post · ' + niceDate(latest.date)) : null, decor.stickers),
       statusBlock(data)
     )
@@ -228,8 +241,12 @@ const FEED_PAGE = 20;
 function feed(filter, withProfile) {
   return (ctx) => {
     const list = ctx.data.posts.filter((p) => (filter === 'all' ? p.pinned || inFeed(p) : filter.includes(p.type)));
-    // Pinned posts first, newest pinned at the top; then everything else by date.
-    const posts = [...list.filter((p) => p.pinned), ...list.filter((p) => !p.pinned)];
+    // Pinned posts first, newest pinned at the top; then everything else by date. (Signed in,
+    // your friends' posts are mixed in by when they were posted: only you ever see that.)
+    const rest = list.filter((p) => !p.pinned);
+    const theirs = filter === 'all' && withProfile ? (ctx.data.friendsInHome || []).map((p) => ({ ...p, fromFriend: true })) : [];
+    const mixed = theirs.length ? [...rest, ...theirs].sort((a, b) => (b.ts || 0) - (a.ts || 0)) : rest;
+    const posts = [...list.filter((p) => p.pinned), ...mixed];
     const wrap = h('div', { class: 'feed' }, withProfile ? profileTile(ctx.data) : null);
     if (!posts.length) {
       wrap.append(h('p', { class: 'empty' }, 'Nothing here yet.'));
@@ -241,7 +258,7 @@ function feed(filter, withProfile) {
     const addMore = () => {
       const next = posts.slice(shown, shown + FEED_PAGE);
       shown += next.length;
-      more.before(...next.map((p) => foldLong(pinnedCard(p), p)));
+      more.before(...next.map((p) => (p.fromFriend ? friendPost(p, ctx.data) : foldLong(pinnedCard(p), p))));
       if (shown >= posts.length) {
         more.remove();
         io?.disconnect();
@@ -395,7 +412,7 @@ function journal(ctx) {
         : h('span')
   );
 
-  const journalHead = h('div', { class: 'journal-head', ...postFontAttrs(post) }, h('h2', null, post.title || 'Untitled place'), h('span', { class: 'hand big' }, [post.area || post.city, 'visited ' + niceDate(post.date)].filter(Boolean).join(' · ')));
+  const journalHead = h('div', { class: 'journal-head', 'data-post': `${post.type}/${post.slug}`, ...postFontAttrs(post) }, h('h2', null, post.title || 'Untitled place'), h('span', { class: 'hand big' }, [post.area || post.city, 'visited ' + niceDate(post.date)].filter(Boolean).join(' · ')));
   // The passport opens at this city's stamp, and the map at this place's pin.
   const slug = encodeURIComponent(post.slug);
   const links = h(
@@ -1333,7 +1350,24 @@ function polaroidOf(post, k) {
 
 // The keepsakes a place has, each as something that makes a fresh copy (pages are laid out
 // again when a window changes size).
+// Long lines: a handwritten note that runs long moves under its picture and writes smaller,
+// long words break rather than poke out, and one-line labels end in "…" (the whole line kept
+// as a tooltip). The same for every keepsake, yours included.
+export function fitKeepsake(el) {
+  if (!el?.querySelectorAll) return el;
+  for (const n of el.querySelectorAll('.pf-note')) {
+    const text = n.textContent.trim();
+    const longest = Math.max(0, ...text.split(/\s+/).map((w) => w.length));
+    if (text.length > 42 || longest > 13) n.classList.add('long');
+    if (text.length > 110) n.classList.add('longer');
+  }
+  for (const n of el.querySelectorAll('.wb-text, .mmp-centre, .mmp-twig, .rk-tag small')) n.title ||= n.textContent;
+  return el;
+}
 export function keepsakeMakers(post) {
+  return keepsakeList(post).map((make) => () => fitKeepsake(make()));
+}
+function keepsakeList(post) {
   return [
     post.ordered?.length && (() => receipt(post, post.ordered, 'till')),
     post.bought?.length && (() => receipt(post, post.bought, 'shop')),
@@ -1436,6 +1470,8 @@ export function keepsakeMakers(post) {
     ...musicMakers(post),
     // studying and work
     ...studyMakers(post),
+    // food and drink, home, travel and celebrations
+    ...lifeMakers(post),
     // and the ones you designed yourself
     ...customMakers(post)
   ].filter(Boolean);
@@ -1548,49 +1584,13 @@ function segmented(active) {
     'div',
     { class: 'segmented' },
     active === 'atlas' ? h('span', { class: 'seg on', 'aria-current': 'page' }, 'Map') : h('a', { class: 'seg', href: '#/atlas' }, 'Map'),
-    active === 'wishlist' ? h('span', { class: 'seg on', 'aria-current': 'page' }, 'Wishlist') : h('a', { class: 'seg', href: '#/wishlist' }, 'Wishlist')
+    active === 'wishlist' ? h('span', { class: 'seg on', 'aria-current': 'page' }, 'Trips wishlist') : h('a', { class: 'seg', href: '#/wishlist' }, 'Trips wishlist')
   );
 }
 
 function atlas(ctx) {
-  const all = places(ctx.data);
-  // Categories in use: built-in and your own first, in their order, then any others.
-  const used = new Set(all.map((p) => p.category).filter(Boolean));
-  const present = [...Object.keys(CATEGORIES).filter((c) => used.has(c)), ...[...used].filter((c) => !CATEGORIES[c])];
-  let filter = 'all';
-  const mapHolder = h('div', { class: 'atlas-map-frame' });
-  const listHolder = h('div', { class: 'finder' });
-  const chips = h('div', { class: 'aqua-chips' });
-  // Arriving from a journal entry: the map opens on that place's pin, its row selected.
-  const from = ctx.param ? all.find((p) => p.slug === ctx.param) : null;
-  let focusOnce = !!from;
-
-  const draw = () => {
-    const shown = all.filter((p) => filter === 'all' || p.category === filter);
-    mapHolder.replaceChildren();
-    const el = h('div', { class: 'atlas-map' });
-    mapHolder.append(el);
-    mountMap(el, {
-      places: shown.map((p) => ({ lat: p.lat, lon: p.lon, title: p.title, category: p.category, href: `#/journal/${p.slug}`, sub: p.area || p.city })),
-      style: 'mac',
-      focus: focusOnce ? shown.indexOf(from) : -1
-    });
-    focusOnce = false;
-    listHolder.replaceChildren(
-      h('div', { class: 'finder-head' }, h('span', null, 'Name'), h('span', null, 'City'), h('span', null, 'Rating')),
-      ...(shown.length
-        ? shown.map((p) => h('a', { class: 'finder-row' + (p === from ? ' found' : ''), href: `#/journal/${p.slug}` }, h('span', null, h('span', { class: 'dot', style: { background: catColor(p.category) } }), p.title || 'Untitled'), h('span', null, p.city), h('span', null, p.rating != null ? `${p.rating}/5` : '–')))
-        : [h('div', { class: 'finder-row empty' }, 'No places in this category yet.')])
-    );
-    chips.replaceChildren(
-      h('button', { type: 'button', class: 'aqua-pill' + (filter === 'all' ? ' on' : ''), onclick: () => { filter = 'all'; sound.click(); draw(); } }, 'All'),
-      ...present.map((c) =>
-        h('button', { type: 'button', class: 'aqua-pill' + (filter === c ? ' on' : ''), onclick: () => { filter = c; sound.click(); draw(); } }, h('span', { class: 'dot', style: { background: catColor(c) } }), catLabel(c))
-      )
-    );
-  };
-  draw();
-  return h('div', { class: 'atlas' }, h('div', { class: 'mac-toolbar' }, segmented('atlas')), h('div', { class: 'mac-pad' }, chips, mapHolder, listHolder));
+  // A travel board: see atlas.js.
+  return atlasBoard(ctx, places(ctx.data), h('div', { class: 'mac-toolbar' }, segmented('atlas')));
 }
 
 // A form for visitors to suggest a place, book, film or podcast. Their name goes on a
@@ -1626,7 +1626,7 @@ export function suggestForm(kind, data, { cls = '', field = 'aqua-field', button
     ),
     h('input', { name: 'website', class: 'hp', tabindex: '-1', autocomplete: 'off', 'aria-hidden': 'true' })
   );
-  return h('div', { class: 'suggest-box' }, form, msg);
+  return h('div', { class: 'suggest-box', 'data-suggest': kind }, form, msg);
 }
 
 export function suggestedStamp(post) {
@@ -1642,7 +1642,7 @@ function wishlist(ctx) {
     const review = isDone ? findReview(w) : null;
     return h(
       'div',
-      { class: 'wish' + (isDone ? ' done' : '') },
+      { class: 'wish' + (isDone ? ' done' : ''), 'data-wish': w.name },
       h('span', { class: 'aqua-check' + (isDone ? ' on' : ''), 'aria-hidden': 'true', html: isDone ? ICON.check : '' }),
       h(
         'div',
@@ -1660,7 +1660,7 @@ function wishlist(ctx) {
     h('div', { class: 'mac-toolbar' }, segmented('wishlist')),
     h(
       'div',
-      { class: 'mac-pad' },
+      { class: 'mac-pad', 'data-wishlist': '' },
       form,
       h('h3', { class: 'mac-label' }, `Want to go · ${want.length}`),
       want.length ? want.map((w) => item(w, false)) : h('p', { class: 'muted' }, 'Nothing on the list yet.'),
@@ -1695,7 +1695,7 @@ function guestbook(ctx) {
   const entries = ctx.data.guestbook.map((g) =>
     h(
       'div',
-      { class: 'gb-entry' },
+      { class: 'gb-entry', 'data-gb': `${g.date}|${g.name}` },
       h('span', { class: 'gb-avatar', html: ICON.person('#1d4f86') }),
       h(
         'div',
@@ -1733,7 +1733,7 @@ function guestbook(ctx) {
   return h(
     'div',
     { class: 'guestbook' },
-    h('div', { class: 'gb-scroll' }, h('div', { class: 'counter' }, h('span', { class: 'counter-label' }, 'VISITOR COUNTER'), digits, h('span', { class: 'counter-sub' }, 'You are one of these')), h('div', { class: 'droid-section' }, 'SIGNATURES'), entries.length ? entries : h('p', { class: 'gb-empty' }, 'No signatures yet. Be the first.')),
+    h('div', { class: 'gb-scroll', 'data-gb-list': '' }, h('div', { class: 'counter' }, h('span', { class: 'counter-label' }, 'VISITOR COUNTER'), digits, h('span', { class: 'counter-sub' }, 'You are one of these')), h('div', { class: 'droid-section' }, 'SIGNATURES'), entries.length ? entries : h('p', { class: 'gb-empty' }, 'No signatures yet. Be the first.')),
     form
   );
 }
@@ -1848,6 +1848,8 @@ function about(ctx) {
     { class: 'feed' },
     profileTile(ctx.data, true),
     h('article', { class: 'card' }, prose(ctx.data.site.about_html, 'card-body')),
+    // The way into the highlights cabinet's room.
+    cabinetEntrance(ctx.data),
     profileGrid(ctx.data),
     buddiesCard(ctx.data),
     h('p', { class: 'muted small' }, 'No trackers, no ads, no cookies. Your sound and wallpaper choices stay in your own browser.')
@@ -1862,7 +1864,8 @@ export const APPS = {
   journal: { title: 'Places Journal', era: 'leather', size: [900, 620], render: journal },
   passport: { title: 'Passport', era: 'leather', size: [560, 680], render: passport },
   atlas: { title: 'Atlas', era: 'mac', size: [680, 600], render: atlas },
-  wishlist: { title: 'Wishlist', era: 'mac', size: [460, 600], render: wishlist },
+  wishlist: { title: 'Trips wishlist', era: 'mac', size: [460, 600], render: wishlist },
+  planner: { title: 'Planner', era: 'planner', size: [860, 640], render: plannerApp },
   guestbook: { title: 'Guestbook', era: 'android', size: [400, 620], render: guestbook },
   stats: { title: 'Travel stats', era: 'xp', icon: 'globe', size: [460, 580], nav: true, render: stats },
   about: { title: 'About', era: 'xp', icon: 'bubble', size: [500, 640], nav: true, render: about },

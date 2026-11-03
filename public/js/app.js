@@ -9,6 +9,8 @@ import { applySkin } from './skins.js';
 import { sound, setSoundPack } from './sound.js';
 import { setTopRoom } from './top-room.js';
 import { startBarDecor } from './bar-decor.js';
+import { syncRoom } from './cabinet.js';
+import { ownerArrival, openOwnerDoor, ownerHooks } from './owner-door.js';
 
 const root = document.getElementById('app');
 const desktopQuery = window.matchMedia('(min-width: 900px) and (pointer: fine)');
@@ -44,9 +46,13 @@ function keepFresh(data, redraw) {
       seen = now;
       for (const k of Object.keys(data)) if (!(k in fresh)) delete data[k];
       Object.assign(data, fresh);
+      // (Signed in: your drafts, plans and the rest stay in what's showing.)
+      ownerHooks.fresh?.(data);
       registerDesigns(data);
-      if (!previewing) setSoundPack(applySkin(data.theme).sounds);
-      redraw();
+      // (Not while the owner is trying on a theme.)
+      if (!previewing && !ownerHooks.trying?.()) setSoundPack(applySkin(data.theme).sounds);
+      // (Not while the owner is writing in a post: it's drawn again once they're done.)
+      if (!ownerHooks.holding?.()) redraw();
     } catch {
     } finally {
       busy = false;
@@ -111,6 +117,8 @@ if (window.parent !== window) {
 }
 
 async function main() {
+  // Back from signing in as the owner: straight in, no welcome screen.
+  ownerArrival();
   liteMode();
   startTheme();
   startSky();
@@ -163,6 +171,10 @@ async function main() {
   }
   appTitle.content = data.site.name;
 
+  // The highlights cabinet's room (#/highlights): over everything else while you're in it.
+  window.addEventListener('hashchange', (e) => syncRoom(data, location.hash, e.oldURL ? new URL(e.oldURL).hash || '#/' : ''));
+  syncRoom(data, location.hash);
+
   if (isDesktop) {
     const desk = startDesktop(root, data);
     let welcomed = hasEntered();
@@ -188,6 +200,7 @@ async function main() {
       desk.open(location.hash);
     });
     if (!previewing) keepFresh(data, () => desk.refresh());
+    openOwnerDoor({ data, desktop: true, redraw: () => desk.refresh(true), root });
   } else {
     let target = location.hash && location.hash !== '#/welcome' ? location.hash : '#/';
     const show = () => {
@@ -215,6 +228,7 @@ async function main() {
       keepFresh(data, () => {
         if (parseRoute(location.hash).app !== 'welcome' && hasEntered() && nearTop(root)) show();
       });
+    openOwnerDoor({ data, desktop: false, redraw: () => parseRoute(location.hash).app !== 'welcome' && hasEntered() && show(), root });
     // Unfolding a foldable, or turning a tablet, can cross into the roomier layout.
     window.matchMedia('(min-width: 700px)').addEventListener('change', () => show());
   }

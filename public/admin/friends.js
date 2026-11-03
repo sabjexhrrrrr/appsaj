@@ -1,5 +1,5 @@
 // Friends, in the back office: a chat-style friends list of people who run their own copy
-// of this site, and their latest posts. (Following only: there are no messages.)
+// of this site, and their latest posts. (And notes between friends: see Mail, signed in.)
 import { h } from '/js/util.js';
 import { withEmoticons } from '/js/emoticons.js';
 import { friendHtml as cleanHtml } from '/js/friend-html.js';
@@ -85,16 +85,16 @@ function page(ctx, redraw) {
 // ---------- who sees what ----------
 
 const VIS = [
-  ['all', 'Everyone', 'A Friends tab on your site with their posts, and your friends list on your About page.'],
-  ['list', 'Just my friends list', 'Your friends’ names on your About page, linking to their sites. Their posts stay here, for you.'],
-  ['off', 'Only me', 'Nothing about your friends on your site. You still see everything here.']
+  ['off', 'Only me', 'Your Friends tab and their posts show only while you’re signed in. Visitors see nothing about your friends.'],
+  ['list', 'Only me, and my friends list', 'Their posts are still just for you; visitors see your friends’ names on your About page, linking to their sites.'],
+  ['all', 'Everyone', 'A Friends tab on your site with their posts for everyone, and your friends list on your About page. (Their posts never go in your Home for visitors.)']
 ];
 function privacyBox(ctx, d, act) {
   const post = (body, msg) => act(() => ctx.api('friends/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }), msg);
   return h(
     'fieldset',
     { class: 'fr-privacy' },
-    h('legend', null, 'Who sees your friends on your site?'),
+    h('legend', null, 'Who sees your friends’ posts on your site?'),
     VIS.map(([id, label, hint]) =>
       h(
         'label',
@@ -106,8 +106,14 @@ function privacyBox(ctx, d, act) {
     h(
       'label',
       { class: 'row check fr-share' },
-      h('input', { type: 'checkbox', checked: d.letShare, onchange: (e) => post({ letShare: e.target.checked }, e.target.checked ? 'Friends may show your posts on their sites.' : 'Your posts now stay off your friends’ sites (they still see them in their back office).') }),
-      h('span', null, h('b', null, 'Let friends show my posts on their sites. '), h('small', null, 'Untick it and your friends still see your posts in their own back office, but never show them to their visitors.'))
+      h('input', { type: 'checkbox', checked: d.letShare, onchange: (e) => post({ letShare: e.target.checked }, e.target.checked ? 'Friends may show your posts on their sites.' : 'Your posts now stay off your friends’ sites for their visitors (your friends still see them, signed in).') }),
+      h('span', null, h('b', null, 'Let friends show my posts on their sites. '), h('small', null, 'Untick it and your friends still see your posts when they’re signed in on their own site, but never show them to their visitors.'))
+    ),
+    h(
+      'label',
+      { class: 'row check fr-home' },
+      h('input', { type: 'checkbox', checked: d.inHome !== false, onchange: (e) => post({ inHome: e.target.checked }, e.target.checked ? 'Their posts are in your Home now (only you see them there).' : 'Their posts are only on Friends now.') }),
+      h('span', null, h('b', null, 'Mix their posts into my Home. '), h('small', null, 'Only you see them there, while you’re signed in: each as it looks on their site, with who it’s from on top.'))
     )
   );
 }
@@ -131,7 +137,7 @@ function addressNotice(ctx, d, act) {
       h(
         'div',
         { class: 'info fr-move' },
-        h('div', null, h('strong', null, 'Has your site moved? '), `You’re in the back office at ${d.here.replace(/^https?:\/\//, '')}, but your friends know your site as ${d.me.replace(/^https?:\/\//, '')}. If it now lives here, move it and your friends’ sites will follow.`),
+        h('div', null, h('strong', null, 'Has your site moved? '), `You’re signed in at ${d.here.replace(/^https?:\/\//, '')}, but your friends know your site as ${d.me.replace(/^https?:\/\//, '')}. If it now lives here, move it and your friends’ sites will follow.`),
         h('div', { class: 'row' }, h('button', { type: 'button', class: 'btn small go', onclick: () => moveTo(ctx, act, d.here) }, `Move my site to ${d.here.replace(/^https?:\/\//, '')}`))
       )
     );
@@ -155,8 +161,8 @@ function addressBox(ctx, d, act, redraw) {
     'details',
     { class: 'fr-how fr-address' },
     h('summary', null, 'My site’s address'),
-    h('p', null, `Your friends know your site as ${d.me ? d.me.replace(/^https?:\/\//, '') : '(set the first time you open Friends)'}. Your friend code carries this address. It stays put, even if you open the back office from another address.`),
-    h('p', null, 'Moved your site (to a domain of your own, say)? Add the domain to your site in Cloudflare first, then put its address here. Visitors who go to your old address are sent to the new one, each friend’s site is told and follows, and the back office keeps opening at both. The README’s “Your own domain” has every step.'),
+    h('p', null, `Your friends know your site as ${d.me ? d.me.replace(/^https?:\/\//, '') : '(set the first time you open Friends)'}. Your friend code carries this address. It stays put, even if you sign in at another address.`),
+    h('p', null, 'Moved your site (to a domain of your own, say)? Add the domain to your site in Cloudflare first, then put its address here. Visitors who go to your old address are sent to the new one, each friend’s site is told and follows, and signing in keeps working at both. The README’s “Your own domain” has every step.'),
     h('div', { class: 'row' }, input, h('button', { type: 'button', class: 'btn small go', onclick: () => {
       const v = input.value.trim();
       if (!v || v.replace(/\/+$/, '') === d.me) return ctx.toast('That’s already your site’s address.');
@@ -306,12 +312,12 @@ function postCard(f, p, feed) {
   return h(
     'article',
     { class: 'fr-post' },
-    h('div', { class: 'fr-post-top' }, h('b', null, feed?.name || f.name), ` · ${TYPE_WORD[p.type] || 'Post'} · ${ago(p.ts)}`),
+    h('div', { class: 'fr-post-top' }, h('b', null, feed?.name || f.name), ` · ${TYPE_WORD[p.type] || 'Post'} · ${ago(p.ts)}`, p.friends_only ? h('span', { class: 'badge fr-only', title: 'Shared only with their friends: it isn’t on their site or yours' }, '👥 Friends only') : null),
     p.title ? h('h3', null, p.title) : null,
     p.creator || p.city || p.rating != null ? h('div', { class: 'fr-post-meta' }, [p.creator, p.city, p.rating != null ? '★'.repeat(Math.max(0, Math.min(5, Math.round(p.rating)))) || '' : ''].filter(Boolean).join(' · ')) : null,
     p.photos.length ? h('div', { class: 'fr-photos' }, p.photos.map((k) => h('img', { src: photoUrl(f.key, k), alt: '', loading: 'lazy' }))) : null,
     cleanHtml(p.html),
-    h('a', { class: 'fr-open', href: p.url, target: '_blank', rel: 'noopener noreferrer' }, 'Open on their site ↗')
+    p.friends_only ? null : h('a', { class: 'fr-open', href: p.url, target: '_blank', rel: 'noopener noreferrer' }, 'Open on their site ↗')
   );
 }
 
@@ -324,7 +330,7 @@ function feedSection(d) {
     'section',
     { class: 'fr-feed' },
     h('h2', { class: 'section-title' }, 'Your friends’ posts'),
-    all.length ? all.slice(0, 20).map(([f, p]) => postCard(f, p, f.cache.feed)) : h('p', { class: 'hint' }, 'Nothing yet. Their newest posts show up here (they arrive moments after your friends post; your site also checks every 10 minutes, or tap Check now).')
+    all.length ? all.slice(0, 20).map(([f, p]) => postCard(f, p, f.cache.feed)) : h('p', { class: 'hint' }, 'Nothing yet. Their newest posts show up here (they arrive moments after your friends post; your site also checks every 20 minutes, or tap Check now).')
   );
 }
 
@@ -334,8 +340,9 @@ function howItWorks() {
     { class: 'fr-how' },
     h('summary', null, 'How friends work'),
     h('p', null, 'You and a friend each run your own copy of this site. Copy your friend code, send it to them, and they paste it into Add a friend on theirs (or the other way round). From then on your two sites trust each other. Your code stays the same for everyone; switch it off or make a new one whenever you like.'),
-    h('p', null, 'Your friends’ sites tell yours the moment they post or change their status, and your site checks theirs every 10 minutes as well. Their photos come through your own site, so your browser never connects to theirs. Drafts and scheduled posts are never shared.'),
-    h('p', null, 'Your site also gets a Friends tab: their posts as one feed you can scroll, with your friends listed at the top. Untick the box above to take it off your site.'),
-    h('p', null, 'It’s following only: there are no messages. Remove a buddy and both sites stop following each other.')
+    h('p', null, 'Your friends’ sites tell yours the moment they post or change their status, and your site checks theirs every 20 minutes as well. Their photos come through your own site, so your browser never connects to theirs. Drafts and scheduled posts are never shared.'),
+    h('p', null, 'Signed in, you see their posts in your Home and on a Friends tab, with your friends listed at the top. A dot on Friends tells you when there’s something new. Whether visitors see the tab too is up to you (above).'),
+    h('p', null, 'You can comment on their posts right there: your comment goes straight on at their site, under your name, linking to yours. (Their visitors’ comments still wait for them to approve, and so do yours on your own site.)'),
+    h('p', null, 'You can send each other short notes, too: they arrive in Mail, and only the friend a note is to can read it. Remove a buddy and both sites stop following each other.')
   );
 }

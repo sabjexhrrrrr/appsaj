@@ -4,9 +4,11 @@
 import { Zip, ZipDeflate, ZipPassThrough } from 'fflate';
 import { stripImage, UnsupportedImage, CLEAN_TYPES } from './strip.js';
 import { parseVisited } from './content.js';
-import { TYPES, buildPost, isVisible, parseWishlist, parseSite, parseStatusLog, parseCategories, parseTravel, parsePassport, parseKeepsakeSettings, parseTheme, parseGuestbookEntry, parseComment, isCommentKey, splitFrontMatter, headerProblem } from './content.js';
+import { TYPES, buildPost, isVisible, parseWishlist, parseSite, parseStatusLog, parseCategories, parseTravel, parsePassport, parseKeepsakeSettings, parseTheme, parseHighlights, parseHighlightsPast, parsePlanner, parseGuestbookEntry, parseComment, isCommentKey, splitFrontMatter, headerProblem } from './content.js';
 import { adminCheck } from './auth.js';
+import { VERSION } from './version.js';
 import * as friends from './friends.js';
+import * as push from './push.js';
 
 const ROBOTS_TAG = 'noindex, nofollow, noarchive, nosnippet, noimageai';
 
@@ -45,7 +47,7 @@ export default {
     }
     return finish(res, new URL(request.url).pathname);
   },
-  // Every 10 minutes: read your friends' sites for new posts and statuses (in case one was
+  // Every 20 minutes: read your friends' sites for new posts and statuses (in case one was
   // offline when it had news), and tell them about a post of yours that has just gone live.
   async scheduled(event, env, ctx) {
     ctx.waitUntil(
@@ -54,7 +56,9 @@ export default {
           .refreshFriends(env)
           .then((r) => r.of && bumpVersion(env))
           .catch((e) => console.error(e)),
-        friends.shareNews(env, buildEverything).catch((e) => console.error(e))
+        friends.shareNews(env, buildEverything).catch((e) => console.error(e)),
+        // (A post scheduled for later that has just gone live: visitors who asked hear about it.)
+        announce(env).catch((e) => console.error(e))
       ])
     );
   }
@@ -95,11 +99,27 @@ async function route(request, env, ctx) {
   if (p === '/admin' || p.startsWith('/admin/')) {
     const check = await adminCheck(request, env);
     if (!check.ok) return lockedPage(check, url, p.startsWith('/admin/api/'));
+    // Signing in from the owner's tile on the welcome screen: once Cloudflare Access has let you
+    // through, back to the site (where it's on), never to a separate back office.
+    if (p === '/admin/signin') {
+      const to = url.searchParams.get('to') || '';
+      const back = /^#\/[\w\-/%.]*$/.test(to) ? to : '#/';
+      return new Response(null, { status: 302, headers: { Location: `/?owner=1${back}`, 'Cache-Control': 'no-store' } });
+    }
+    // There's no separate back office any more: /admin is your site, signed in. (The plain
+    // editor at /admin/plain is kept as a safety net, in case something on the site isn't
+    // working.)
+    if (p === '/admin' || p === '/admin/' || p === '/admin/index.html') return new Response(null, { status: 302, headers: { Location: '/?owner=1#/', 'Cache-Control': 'no-store' } });
     if (p.startsWith('/admin/api/')) {
+      // Changes only ever come from your own site's pages (never a form on someone else's).
+      const origin = request.headers.get('Origin');
+      if (method !== 'GET' && origin && origin !== url.origin) return json({ error: 'Not from this site.' }, 403);
       const res = await adminApi(request, env, url, ctx);
       // Anything saved might be news for your friends: their sites hear straight away (and
       // nothing is sent when what they see hasn't changed).
       if (method !== 'GET' && res.ok) ctx.waitUntil(friends.shareNews(env, buildEverything).catch((e) => console.error(e)));
+      // (And a post that has just gone on the site is announced to visitors who asked.)
+      if (method !== 'GET' && res.ok) ctx.waitUntil(announce(env, url.origin).catch((e) => console.error(e)));
       return res;
     }
     const res = await env.ASSETS.fetch(request);
@@ -110,9 +130,23 @@ async function route(request, env, ctx) {
 
   if (p === '/api/all' && method === 'GET') return apiAll(request, env, ctx);
   if (p === '/api/visit' && method === 'POST') return visit(request, env);
-  if (p === '/api/guestbook' && method === 'POST') return signGuestbook(request, env);
-  if (p === '/api/comment' && method === 'POST') return leaveComment(request, env);
-  if (p === '/api/suggest' && method === 'POST') return suggest(request, env);
+  if (p === '/api/guestbook' && method === 'POST') return signGuestbook(request, env, ctx);
+  if (p === '/api/comment' && method === 'POST') return leaveComment(request, env, ctx);
+  if (p === '/api/suggest' && method === 'POST') return suggest(request, env, ctx);
+  // Visitors asking to hear when you post (only while you let them), and changing their minds.
+  if (p === '/api/push/key' && method === 'GET') {
+    const on = (await push.settings(env)).visitors;
+    return json({ on, key: on ? await push.publicKey(env) : '' }, 200, { 'Cache-Control': 'no-store' });
+  }
+  if (p === '/api/push/subscribe' && method === 'POST') {
+    if (looksLikeBot(request)) return json({ error: 'Not accepted' }, 400);
+    const out = await push.subscribeVisitor(env, await request.json().catch(() => ({})));
+    return json(out.ok ? { ok: true } : { error: out.error }, out.status || 200);
+  }
+  if (p === '/api/push/unsubscribe' && method === 'POST') {
+    const body = await request.json().catch(() => ({}));
+    return json(await push.unsubscribe(env, body.endpoint, 'visitor'));
+  }
   if (p === '/api/nudge' && method === 'POST') return nudge(request, env);
   if (p.startsWith('/media/') && (method === 'GET' || method === 'HEAD')) return media(request, env, p);
   // Photos in your Friends feed, fetched from your friends' sites by yours.
@@ -123,10 +157,13 @@ async function route(request, env, ctx) {
     } catch {
       return new Response('Bad path', { status: 400 });
     }
-    return friends.friendPhotoForVisitor(env, parts[0], parts.slice(1).join('/'));
+    // (Signed in, you see the photos of every post of theirs you have, friends-only ones too.)
+    // (Only a browser's own request is checked: a sign-in only ever arrives with one.)
+    const mine = (request.headers.has('Cookie') || request.headers.get('Sec-Fetch-Site') === 'same-origin') && (await adminCheck(request, env)).ok;
+    return friends.friendPhotoForVisitor(env, parts[0], parts.slice(1).join('/'), mine);
   }
   // Friends' sites talking to yours (every request signed with the secret you share).
-  if (p.startsWith('/api/friends/')) return friends.friendsApi(request, env, p, { buildEverything, mediaForFriend: (key) => friendMedia(env, key), changed: () => bumpVersion(env), waitUntil: (work) => ctx.waitUntil(work) });
+  if (p.startsWith('/api/friends/')) return friends.friendsApi(request, env, p, { buildEverything, mediaForFriend: (key) => friendMedia(env, key), friendComment: (who, info) => friendComment(env, who, info, ctx, url.origin), changed: () => bumpVersion(env), news: () => friends.shareNews(env, buildEverything), waitUntil: (work) => ctx.waitUntil(work) });
   if (p.startsWith('/api/')) return json({ error: 'Not found' }, 404);
 
   return staticFile(request, env, p);
@@ -138,6 +175,12 @@ async function route(request, env, ctx) {
 const LONG_LIVED = /^\/(fonts|vendor|icons|cursors)\//;
 async function staticFile(request, env, path) {
   const res = await env.ASSETS.fetch(request);
+  // (The notifications worker is always checked afresh, so a change to it reaches every device.)
+  if (path === '/sw.js' && res.status === 200) {
+    const sw = new Response(res.body, res);
+    sw.headers.set('Cache-Control', 'no-cache');
+    return sw;
+  }
   if (!LONG_LIVED.test(path) || res.status !== 200) return res;
   const out = new Response(res.body, res);
   out.headers.set('Cache-Control', 'public, max-age=2592000');
@@ -158,14 +201,14 @@ const LOCKED = {
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 function lockedPage(check, url, isApi) {
   const [title, how] = LOCKED[check.why] || LOCKED.bad;
-  if (isApi) return json({ error: `Back office is locked: ${title.replace(/’/g, "'")}.`, why: check.why }, 403);
+  if (isApi) return json({ error: `Signing in isn’t working: ${title.replace(/’/g, "'")}.`.replace(/’/g, "'"), why: check.why }, 403);
   if (check.why === 'setup') return setupGuide(url);
   const body = how.replace('{host}', esc(url.hostname)).replace('{email}', esc(check.email || ''));
   const signOut = ['bad', 'expired', 'email', 'audience'].includes(check.why) ? '<p><a href="/cdn-cgi/access/logout" style="display:inline-block;padding:8px 14px;border:1px solid #003c74;border-radius:3px;background:#ecebe6;color:#000;text-decoration:none">Sign out, then sign in again</a></p>' : '';
   return new Response(
     '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Back office</title><body style="font-family:Tahoma,sans-serif;padding:24px;max-width:620px;line-height:1.5">' +
-      `<h1 style="font-size:22px">Back office is locked</h1><h2 style="font-size:17px;color:#0d3a9a">${title}</h2><p>${body}</p>${signOut}` +
-      '<p style="color:#666;font-size:13px">Only the site’s owner can open the back office. If that’s not you, there’s nothing to see here: <a href="/">back to the site</a>.</p></body>',
+      `<h1 style="font-size:22px">Your owner tools are locked</h1><h2 style="font-size:17px;color:#0d3a9a">${title}</h2><p>${body}</p>${signOut}` +
+      '<p style="color:#666;font-size:13px">Only the site’s owner can sign in here. If that’s not you, there’s nothing to see here: <a href="/">back to the site</a>.</p></body>',
     { status: 403, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } }
   );
 }
@@ -204,7 +247,7 @@ export function setupPrompt(host) {
   return [
     `I've just put my own website online with Cloudflare, using the open-source "My Corner" blog. Its address is https://${host}. I'm not technical, so please guide me one small step at a time and wait for me to say "done" before the next one.`,
     '',
-    'The goal: lock the back office (the /admin part of my site) so only I can get in, using Cloudflare Zero Trust Access (free plan). The rest of the site stays public.',
+    'The goal: lock the owner’s sign-in (the /admin part of my site) so only I can get in, using Cloudflare Zero Trust Access (free plan). The rest of the site stays public.',
     '',
     'Cloudflare changes its menus now and then, so please check the current Cloudflare documentation as we go:',
     '- https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/self-hosted-public-app/',
@@ -217,7 +260,7 @@ export function setupPrompt(host) {
     '3. Give it an Allow policy that includes only my own email address, and sign in with a one-time PIN sent by email.',
     '4. Copy the application’s Application Audience (AUD) Tag.',
     '5. In Workers & Pages, open my site (the Worker), then Settings > Variables and Secrets, and set: ACCESS_TEAM_DOMAIN = my team domain; ACCESS_AUD = the AUD tag; ADMIN_EMAIL = my email (or none); CONTACT_EMAIL = my email (or none). Save and deploy.',
-    `6. Visit https://${host}/admin. Cloudflare should email me a code; once I'm in, we're done. If the page says the back office is locked, it explains why: help me fix what it says.`,
+    `6. Visit https://${host}/admin. Cloudflare should email me a code; once I'm in, we're done. If the page says my owner tools are locked, it explains why: help me fix what it says.`,
     '',
     'Please never ask me to paste passwords, one-time codes or API tokens into this chat. The team domain, AUD tag and my site address are fine to share.'
   ].join('\n');
@@ -241,10 +284,10 @@ function setupGuide(url) {
     ? '<p><b>Got a domain of your own</b> (like myname.com)? Set things up at this address first. Then the README’s “Your own domain” section moves your site there, and this address keeps working.</p>'
     : '';
   const page =
-    '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Set up your back office</title>' +
+    '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Set up signing in</title>' +
     '<body style="font-family:Tahoma,sans-serif;padding:24px;max-width:680px;line-height:1.55;color:#1b1b1b">' +
     '<h1 style="font-size:22px;margin-bottom:4px">Your site is online. One more step!</h1>' +
-    '<p style="margin-top:0">The back office is where you write posts and change everything. It stays shut until you lock it so that only you can get in. It takes about ten minutes, and costs nothing.</p>' +
+    '<p style="margin-top:0">Signed in, you write posts and change everything right on your site. Signing in stays shut until you lock it so that only you can get in. It takes about ten minutes, and costs nothing.</p>' +
     `<ol style="padding-left:22px">${steps.map((t) => `<li style="margin-bottom:8px">${t}</li>`).join('')}</ol>` +
     domain +
     '<h2 style="font-size:17px;color:#0d3a9a;margin-top:24px">Rather have an AI help?</h2>' +
@@ -303,7 +346,7 @@ async function readText(env, key) {
 }
 
 const PARSED_CACHE = 'data/_parsed.json';
-const PARSED_VERSION = 30; // bump when buildPost changes shape
+const PARSED_VERSION = 32; // bump when buildPost changes shape
 
 // "reading [book]" (or [film], [podcast], [music]) becomes "reading The Remains of the Day" while a book is marked as reading.
 function fillStatus(status, posts) {
@@ -321,7 +364,9 @@ function tzOffset(env) {
   return env.TIMEZONE || 'Europe/London';
 }
 
-async function buildEverything(env, { includeHidden = false } = {}) {
+// includeHidden: everything, for the back office. forFriends: what's live, friends-only posts too
+// (for your friends' sites). Otherwise: what the public sees.
+async function buildEverything(env, { includeHidden = false, forFriends = false } = {}) {
   const tz = tzOffset(env);
   const objects = await listAll(env);
   const mdKeys = objects.map((o) => o.key).filter((k) => k.endsWith('.md'));
@@ -361,7 +406,7 @@ async function buildEverything(env, { includeHidden = false } = {}) {
   const posts = [];
   for (const k of postKeys) {
     const post = cache[k]?.post;
-    if (post && (includeHidden || isVisible(post, now))) posts.push(post);
+    if (post && (includeHidden || (isVisible(post, now) && (forFriends || !post.friends_only)))) posts.push(post);
   }
   posts.sort((a, b) => b.ts - a.ts || b.slug.localeCompare(a.slug));
 
@@ -372,7 +417,7 @@ async function buildEverything(env, { includeHidden = false } = {}) {
     .map(({ key, ...rest }) => rest)
     .sort((a, b) => String(b.date).localeCompare(String(a.date)));
 
-  const [siteText, wishText, travelText, logText, catText, passportText, keepText, themeText] = await Promise.all([
+  const [siteText, wishText, travelText, logText, catText, passportText, keepText, themeText, highlightsText, plannerText] = await Promise.all([
     readText(env, 'site.md'),
     readText(env, 'wishlist.md'),
     readText(env, 'travel.md'),
@@ -380,8 +425,23 @@ async function buildEverything(env, { includeHidden = false } = {}) {
     readText(env, 'categories.md'),
     readText(env, 'passport.md'),
     readText(env, 'keepsakes.md'),
-    readText(env, 'theme.md')
+    readText(env, 'theme.md'),
+    readText(env, 'highlights.md'),
+    readText(env, 'planner.md')
   ]);
+  // The highlights cabinet: only posts that are on the site (the back office sees them all), and
+  // each of them marked with its place on its shelf, for the rosette on its card.
+  const highlights = {};
+  const byKey = new Map(posts.map((p, i) => [`${p.type}/${p.slug}`, i]));
+  for (const [shelf, list] of Object.entries(parseHighlights(highlightsText))) {
+    const kept = includeHidden ? list : list.filter((x) => byKey.has(x.post) && !posts[byKey.get(x.post)].friends_only);
+    if (kept.length) highlights[shelf] = kept;
+    kept.forEach((x, i) => byKey.has(x.post) && (posts[byKey.get(x.post)] = { ...posts[byKey.get(x.post)], highlight: i + 1 }));
+  }
+  // Once in the cabinet: the room's library of former highlights (on the site, only posts still
+  // there and not back in the cabinet).
+  const inCabinet = new Set(Object.values(highlights).flat().map((x) => x.post));
+  const highlightsPast = parseHighlightsPast(highlightsText).filter((x) => includeHidden || (byKey.has(x.post) && !posts[byKey.get(x.post)].friends_only && !inCabinet.has(x.post)));
 
   const site = parseSite(siteText);
   // Approved comments, each with its post (and none at all while comments are switched off).
@@ -415,6 +475,10 @@ async function buildEverything(env, { includeHidden = false } = {}) {
     keepsakes: parseKeepsakeSettings(keepText),
     // The site's theme: colours, wallpaper, charms and pointer (theme.md).
     theme: parseTheme(themeText),
+    highlights,
+    highlightsPast,
+    // The planner's lists (private ones only in the back office).
+    planner: parsePlanner(plannerText).filter((l) => includeHidden || !l.private),
     guestbook,
     generated: now
   };
@@ -444,8 +508,8 @@ async function apiAll(request, env, ctx) {
     const data = await buildEverything(env);
     // Visitors get the finished HTML; the raw Markdown and file names stay for the back office.
     data.posts = data.posts.map(({ body, files, key, ...p }) => p);
-    // Your friends: who they are and how they are, and their latest posts (unless you've turned
-    // that off in the back office).
+    // Your friends: who they are and how they are, and their latest posts (only if you've chosen
+    // to show them to everyone: otherwise they're just for you, signed in).
     const pals = await friends.publicFriends(env).catch(() => ({ buddies: [], posts: [] }));
     data.buddies = pals.buddies;
     data.friendPosts = pals.posts;
@@ -455,6 +519,8 @@ async function apiAll(request, env, ctx) {
     data.friendCategories = pals.categories || [];
     // (No Friends tab when you don't show friends' posts; the friends list, if shown, is on About.)
     data.friendsTab = !!pals.postsShown;
+    // (Whether visitors can ask to hear when you post.)
+    data.notifyPosts = (await push.settings(env).catch(() => ({}))).visitors === true;
     res = json(data, 200, { 'Cache-Control': 'public, max-age=300' });
     ctx.waitUntil(cache.put(cacheKey, res.clone()));
   }
@@ -471,7 +537,14 @@ async function media(request, env, path) {
   } catch {
     return new Response('Bad path', { status: 400 });
   }
+  // A friends-only post's photos aren't for the public (the back office still sees them).
+  const [type, slug] = key.split('/');
+  if (type && slug && (await friendsOnlyPost(env, type, slug)) && !(await adminCheck(request, env)).ok) return new Response('Not found', { status: 404 });
   return mediaFor(env, key, request.method === 'HEAD');
+}
+async function friendsOnlyPost(env, type, slug) {
+  const { posts } = await buildEverything(env, { forFriends: true });
+  return posts.some((p) => p.type === type && p.slug === slug && p.friends_only);
 }
 
 // For a friend's site: a photo only if it belongs to a post that's published (not a draft, not
@@ -479,7 +552,7 @@ async function media(request, env, path) {
 async function friendMedia(env, key) {
   const [type, slug, file, more] = String(key).split('/');
   if (more !== undefined) return new Response('Not found', { status: 404 });
-  const { posts } = await buildEverything(env);
+  const { posts } = await buildEverything(env, { forFriends: true });
   const post = posts.find((x) => x.type === type && x.slug === slug);
   if (!post || !post.files.includes(file)) return new Response('Not found', { status: 404 });
   return mediaFor(env, key);
@@ -566,7 +639,9 @@ function stamp() {
   const d = new Date();
   const iso = d.toISOString();
   const rand = crypto.getRandomValues(new Uint32Array(1))[0].toString(36);
-  return { iso, file: iso.replace(/[-:]/g, '').replace(/\..+$/, '') + '-' + rand };
+  // (To the thousandth of a second, so two left in the same second keep their order: an older
+  // name, without the thousandths, still sorts before a newer one from that second.)
+  return { iso, file: iso.replace(/[-:]/g, '').replace(/\.(\d+)Z$/, '$1') + '-' + rand };
 }
 
 async function readBody(request) {
@@ -576,7 +651,7 @@ async function readBody(request) {
   return Object.fromEntries(form.entries());
 }
 
-async function signGuestbook(request, env) {
+async function signGuestbook(request, env, ctx) {
   if (looksLikeBot(request)) return json({ error: 'Not accepted' }, 400);
   let body;
   try {
@@ -593,12 +668,13 @@ async function signGuestbook(request, env) {
   const { iso, file } = stamp();
   const text = `---\nname: ${yamlString(name)}\ndate: ${yamlString(iso.slice(0, 16).replace('T', ' '))}\n---\n${message}\n`;
   await env.CONTENT.put(`guestbook-pending/${file}.md`, text, { httpMetadata: { contentType: 'text/markdown; charset=utf-8' } });
+  later(ctx, push.notifyOwner(env, 'comments', { title: `✍ ${name} signed the guestbook`, body: message, url: '/?owner=1#/guestbook', tag: 'guestbook' }, new URL(request.url).origin));
   return json({ ok: true, pending: true });
 }
 
 // A visitor's comment on a post (or a reply to another comment). Only a name is asked for, and
 // nothing else about them is kept. It waits for the owner's approval in the back office.
-async function leaveComment(request, env) {
+async function leaveComment(request, env, ctx) {
   if (looksLikeBot(request)) return json({ error: 'Not accepted' }, 400);
   let body;
   try {
@@ -626,10 +702,51 @@ async function leaveComment(request, env) {
   const { iso, file } = stamp();
   const text = `---\nname: ${yamlString(name)}\ndate: ${yamlString(iso.slice(0, 16).replace('T', ' '))}\n${answering ? `reply_to: ${yamlString(answering)}\n` : ''}---\n${message}\n`;
   await env.CONTENT.put(`comments-pending/${type}/${slug}/${file}.md`, text, { httpMetadata: { contentType: 'text/markdown; charset=utf-8' } });
+  later(ctx, push.notifyOwner(env, 'comments', { title: `💬 ${name} ${answering ? 'replied' : 'commented'}${post.title ? ` on “${post.title}”` : ''}`, body: message, url: '/?owner=1' + postHash(post), tag: `comment-${type}-${slug}` }, new URL(request.url).origin));
   return json({ ok: true, pending: true });
 }
 
-async function suggest(request, env) {
+// A friend's comment on one of your posts, sent by their site (it's checked there and signed):
+// it goes straight on, under their name, linking to their site. Friends see friends-only posts,
+// so they can comment on those too.
+async function friendComment(env, who, { post: id, message, reply_to }, ctx, origin = '') {
+  if (message.length < 2) return { error: 'Write a comment first.', status: 400 };
+  const [type, slug] = String(id || '').split('/');
+  const data = await buildEverything(env, { forFriends: true });
+  if (!data.site.comments) return { error: 'Comments are switched off on their site.', status: 403 };
+  const post = data.posts.find((x) => x.type === type && x.slug === slug);
+  if (!post) return { error: 'That post isn’t on their site any more.', status: 404 };
+  const answering = reply_to && post.comments.some((c) => c.id === reply_to) ? reply_to : '';
+  if (post.comments.filter((c) => c.site === who.site).length >= 100) return { error: 'That’s a lot of comments on one post. Try another!', status: 429 };
+  const { iso, file } = stamp();
+  const text = `---\nname: ${yamlString(who.name)}\nsite: ${yamlString(who.site)}\ndate: ${yamlString(iso.slice(0, 16).replace('T', ' '))}\n${answering ? `reply_to: ${yamlString(answering)}\n` : ''}---\n${message}\n`;
+  await env.CONTENT.put(`comments/${type}/${slug}/${file}.md`, text, { httpMetadata: { contentType: 'text/markdown; charset=utf-8' } });
+  later(ctx, push.notifyOwner(env, 'comments', { title: `💬 ${who.name} (a friend) commented${post.title ? ` on “${post.title}”` : ''}`, body: message, url: '/?owner=1' + postHash(post), tag: `comment-${type}-${slug}` }, origin));
+  return { ok: true };
+}
+
+// This copy's version, and the template's newest (asked of GitHub at most every six hours, and
+// kept). A copy made with the Deploy button updates itself overnight ("Update my site").
+const TEMPLATE = 'tabbettthhh/RetroBloggerPublic';
+const VERSION_CHECK = 'data/_version-check.json';
+async function updateCheck(env, again = false) {
+  let kept = null;
+  try {
+    kept = JSON.parse((await readText(env, VERSION_CHECK)) || 'null');
+  } catch {}
+  if (!again && kept && Date.now() - kept.at < 6 * 60 * 60 * 1000) return { mine: VERSION, latest: kept.latest, at: kept.at, template: TEMPLATE };
+  let latest = '';
+  try {
+    const r = await fetch(`https://raw.githubusercontent.com/${TEMPLATE}/main/src/version.js`, { headers: { 'User-Agent': 'MyCorner-UpdateCheck/1' }, signal: AbortSignal.timeout(5000) });
+    latest = r.ok ? /VERSION\s*=\s*'([\w.-]{1,30})'/.exec(await r.text())?.[1] || '' : '';
+  } catch {}
+  if (!latest) return { mine: VERSION, latest: kept?.latest || '', at: kept?.at || 0, template: TEMPLATE, unreachable: true };
+  const at = Date.now();
+  await env.CONTENT.put(VERSION_CHECK, JSON.stringify({ latest, at }));
+  return { mine: VERSION, latest, at, template: TEMPLATE };
+}
+
+async function suggest(request, env, ctx) {
   if (looksLikeBot(request)) return json({ error: 'Not accepted' }, 400);
   let body;
   try {
@@ -649,7 +766,20 @@ async function suggest(request, env) {
   const { iso, file } = stamp();
   const text = `---\nkind: ${kind}\ntitle: ${yamlString(title)}\nfrom: ${yamlString(from)}\ndate: ${yamlString(iso.slice(0, 16).replace('T', ' '))}\n---\n${note}\n`;
   await env.CONTENT.put(`suggestions/${file}.md`, text, { httpMetadata: { contentType: 'text/markdown; charset=utf-8' } });
+  later(ctx, push.notifyOwner(env, 'comments', { title: `💡 ${from} suggested a ${kind}`, body: title, url: '/?owner=1#/' + (kind === 'place' ? 'wishlist' : { book: 'books', film: 'films', podcast: 'podcasts', music: 'music', tv: 'tv' }[kind]), tag: 'suggestion' }, new URL(request.url).origin));
   return json({ ok: true });
+}
+
+// Notifications go out after the answer (a slow push service never holds anyone up).
+function later(ctx, work) {
+  const p = Promise.resolve(work).catch((e) => console.error('push', e));
+  if (ctx?.waitUntil) ctx.waitUntil(p);
+}
+const postHash = (post) => (post.type === 'places' ? `#/journal/${post.slug}` : ['books', 'films', 'podcasts', 'music', 'tv'].includes(post.type) ? `#/${post.type}/${post.slug}` : `#/post/${post.type}/${post.slug}`);
+// Your new posts, announced to visitors who asked (see push.announcePosts).
+async function announce(env, origin = '') {
+  const data = await buildEverything(env);
+  return push.announcePosts(env, data.posts, data.site.name, origin || (await friends.loadFriends(env)).me);
 }
 
 // ---------- back office ----------
@@ -672,6 +802,31 @@ async function adminApi(request, env, url, ctx) {
   const p = url.pathname.slice('/admin/api/'.length);
   const m = request.method;
   const key = url.searchParams.get('key');
+
+  // Whether you're signed in (the site asks, to switch on its owner's tools).
+  if (p === 'me' && m === 'GET') return json({ owner: true });
+  // Whether this copy of the site has the latest version of the template.
+  if (p === 'version' && m === 'GET') return json(await updateCheck(env, url.searchParams.get('again') === '1'));
+  // Notifications: your devices, your choices, a test, and visitors' (off unless you say).
+  if (p === 'push' && m === 'GET') return json(await push.myDevices(env));
+  if (p.startsWith('push/') && m === 'POST') {
+    const body = await request.json().catch(() => ({}));
+    try {
+      if (p === 'push/subscribe') return json(await push.subscribeMine(env, body));
+      if (p === 'push/unsubscribe') return json(await push.unsubscribe(env, body.endpoint, 'mine'));
+      if (p === 'push/settings') {
+        const out = await push.saveSettings(env, body);
+        await bumpVersion(env);
+        // (What's on the site already is noted, so only posts from now on are announced.)
+        if (out.visitors) await announce(env, url.origin).catch(() => {});
+        return json(out);
+      }
+      if (p === 'push/test') return json({ sent: await push.testMine(env, url.origin) });
+    } catch (e) {
+      return json({ error: String(e.message || e) }, 400);
+    }
+    return json({ error: 'Not found' }, 404);
+  }
 
   if (p === 'overview' && m === 'GET') {
     const data = await buildEverything(env, { includeHidden: true });
@@ -713,7 +868,9 @@ async function adminApi(request, env, url, ctx) {
     } catch {}
     // Your friends' latest posts, for the notifications.
     const friendNotes = await friends.friendNotes(env).catch(() => ({ count: 0, posts: [] }));
-    return json({ ...data, files, pendingGuestbook: pendingGb, approvedGuestbook: approvedGb, pendingComments, approvedComments, suggestions, counter, nudges, notifySeen, friendNotes, now: Date.now() });
+    // And everything of theirs, for you, signed in, on the site: friends-only posts and comments too.
+    const friendsMine = await friends.publicFriends(env, { mine: true }).catch(() => ({ buddies: [], posts: [] }));
+    return json({ ...data, files, pendingGuestbook: pendingGb, approvedGuestbook: approvedGb, pendingComments, approvedComments, suggestions, counter, nudges, notifySeen, friendNotes, friendsMine, now: Date.now() });
   }
 
   // Many Markdown files at once (used by the Goodreads and Letterboxd imports).
@@ -840,7 +997,7 @@ async function adminApi(request, env, url, ctx) {
   }
 
   // ---- Friends ----
-  if (p.startsWith('friends')) {
+  if (p.startsWith('friends') || p === 'mail' || p.startsWith('mail/')) {
     const fkey = url.searchParams.get('friend') || '';
     // Your site's own address, as friends will reach it, is taken from the back office itself.
     await friends.rememberMe(env, url.origin);
@@ -884,6 +1041,13 @@ async function adminApi(request, env, url, ctx) {
         return json({ ok: true, ...out });
       }
       if (p === 'friends/photo' && m === 'GET') return friends.friendPhoto(env, fkey, url.searchParams.get('p') || '');
+      // Notes between friends: your mail, sending one, marking them read, deleting one.
+      if (p === 'mail' && m === 'GET') return json(await friends.myMail(env));
+      if (p === 'mail/send' && m === 'POST') return json(await friends.sendNote(env, String(body.friend || ''), body));
+      if (p === 'mail/read' && m === 'POST') return json(await friends.markMail(env, body.ids === 'all' ? 'all' : body.ids || [], body.read !== false));
+      if (p === 'mail/delete' && m === 'POST') return json(await friends.deleteNote(env, String(body.id || '')));
+      // A comment from you on a friend's post (it goes on at their site, straight away).
+      if (p === 'friends/comment' && m === 'POST') return json(await friends.commentOnFriend(env, fkey || String(body.friend || ''), body));
     } catch (e) {
       return json({ error: String(e.message || e) }, 400);
     }

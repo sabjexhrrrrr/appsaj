@@ -11,10 +11,16 @@ import { viewThemes } from '/admin/themes.js';
 import { OPTIONS, FONT_FAMILIES, resolveSkin } from '/js/skins.js';
 import { CARD_STYLES, RIBBONS, miniCard, mixMini, themeCard, ownRibbon, ensureOwnCardsCss } from '/js/card-dress.js';
 import { TOP_ROOM, setTopRoom, onHomeScreen } from '/js/top-room.js';
+import { PICTURES, PICTURE_IDS, pictureHtml, isPhoto, hasPicture } from '/js/pictures.js';
 
-const panel = document.getElementById('panel');
-const tabsEl = document.querySelector('.admin-tabs');
-const toastEl = document.querySelector('.toast');
+// Where it all draws. On the back office's own page (the safety net), its page; on the site,
+// in owner mode, wherever the site puts it (see kit at the end, and /admin/owner.js).
+let panel = document.getElementById('panel');
+let tabsEl = document.querySelector('.admin-tabs');
+let sectionsEl = document.querySelector('.admin-sections');
+let toastEl = document.querySelector('.toast');
+// What the site wants to hear: everything changed (after a save), an editor finished, a toast.
+const hooks = { changed: null, editorDone: null, toast: null, go: null };
 
 let data = null;
 let tab = 'posts';
@@ -54,7 +60,7 @@ function statusWord(type, status, state) {
 
 // ---------- plumbing ----------
 
-const SIGNED_OUT = "Your sign-in has run out, so nothing was saved. Open the back office in a new tab and sign in, then come back to this tab and try again: what you've written is still here.";
+const SIGNED_OUT = "Your sign-in has run out, so nothing was saved. Open your site in a new tab and sign in again (your name on the welcome screen), then come back to this tab and try again: what you've written is still here.";
 async function api(path, opts = {}) {
   let r;
   try {
@@ -96,6 +102,7 @@ const today = () => nowLocal().slice(0, 10);
 
 let toastTimer;
 function toast(msg, err = false) {
+  if (hooks.toast) return hooks.toast(msg, err);
   toastEl.textContent = msg;
   toastEl.classList.toggle('err', err);
   toastEl.hidden = false;
@@ -106,8 +113,14 @@ function toast(msg, err = false) {
 async function refresh() {
   data = await api('overview');
   registerCategories(data.categories);
-  setTopRoom(data.site?.top_room);
+  if (!hooks.changed) setTopRoom(data.site?.top_room);
   drawTabs();
+  hooks.changed?.(data);
+}
+// An editor's done (saved, cancelled or thrown away): on the site, the site takes over again.
+function finishEditing() {
+  if (hooks.editorDone) return hooks.editorDone();
+  go('posts');
 }
 
 function nowLocal() {
@@ -167,6 +180,7 @@ function splitFM(text) {
 function status(p) {
   if (p.error) return ['error', 'Problem'];
   if (p.draft) return ['draft', 'Draft'];
+  if (p.friends_only && !(p.ts > data.now)) return ['friends', 'Friends only'];
   if (p.ts > data.now) return ['later', 'Scheduled'];
   return ['', 'Live'];
 }
@@ -183,13 +197,15 @@ function drawTabs() {
   const sugg = data.suggestions.length;
   const waitingComments = (data.pendingComments || []).length;
   const unread = unreadCount();
-  document.title = (unread ? `(${unread}) ` : '') + 'Back office';
+  document.title = (unread ? `(${unread}) ` : '') + 'Plain editor';
   const defs = [
     ['notifications', h('span', { class: 'bell', 'aria-hidden': 'true' }), unread, 'Notifications'],
     ['status', 'Status'],
     ['friends', 'Friends'],
     ['posts', 'Posts'],
     ['new', editor && editor.key ? 'Edit post' : 'New post'],
+    ['highlights', 'Highlights'],
+    ['planner', 'Planner'],
     ['comments', 'Comments', waitingComments],
     ['guestbook', 'Guestbook', pending],
     ['suggestions', 'Suggestions', sugg],
@@ -199,16 +215,47 @@ function drawTabs() {
     ['travel', 'Travel stats'],
     ['files', 'Export & files']
   ];
+  // Five sections (a bar along the bottom on a phone); each shows a short row of its own pages.
+  const here = sectionOf(tab);
+  const counts = Object.fromEntries(defs.map(([id, , n]) => [id, n || 0]));
+  if (!sectionsEl || !tabsEl) return;
+  sectionsEl.replaceChildren(
+    ...SECTIONS.map(([id, label, icon, pages]) => {
+      const n = pages.reduce((sum, p) => sum + counts[p], 0);
+      return h('button', { type: 'button', class: 'sec-btn', 'data-section': id, 'aria-current': here === id ? 'page' : null, 'aria-label': `${label}${n ? `, ${n} new` : ''}`, onclick: () => go(here === id ? tab : lastIn[id] || pages[0]) }, h('span', { class: 'sec-ico', 'aria-hidden': 'true', html: icon }), h('span', { class: 'sec-label' }, label), n ? h('span', { class: 'badge' }, String(n)) : null);
+    })
+  );
   tabsEl.replaceChildren(
     ...defs.map(([id, label, n, aria]) =>
-      h('button', { type: 'button', role: 'tab', 'aria-selected': String(tab === id), 'aria-label': aria ? `${aria}${n ? `, ${n} new` : ''}` : null, title: aria || null, class: aria ? 'tab-bell' : null, onclick: () => go(id) }, label, n ? h('span', { class: 'badge' }, String(n)) : null)
+      h('button', { type: 'button', role: 'tab', 'data-tab': id, 'data-section': sectionOf(id), hidden: sectionOf(id) !== here || null, 'aria-selected': String(tab === id), 'aria-label': aria ? `${aria}${n ? `, ${n} new` : ''}` : null, title: aria || null, class: aria ? 'tab-bell' : null, onclick: () => go(id) }, label, aria ? h('span', { class: 'tab-word' }, aria) : null, n ? h('span', { class: 'badge' }, String(n)) : null)
     )
   );
 }
 
+// The back office's sections and the pages in each.
+const ICONS = {
+  home: '<svg viewBox="0 0 24 24" width="22" height="22"><path d="M3 11.2 12 4l9 7.2V20a1 1 0 0 1-1 1h-5.2v-6H9.2v6H4a1 1 0 0 1-1-1z" fill="currentColor"/></svg>',
+  posts: '<svg viewBox="0 0 24 24" width="22" height="22"><path d="M6 2.5h8.5L19 7v13.5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1v-17a1 1 0 0 1 1-1z" fill="currentColor"/><path d="M8 11h8M8 14.5h8M8 18h5" stroke="#fff" stroke-width="1.6" stroke-linecap="round"/></svg>',
+  inbox: '<svg viewBox="0 0 24 24" width="22" height="22"><path d="M3 13.5 6 4.5h12l3 9V19a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 19z" fill="currentColor"/><path d="M3.5 13.5h5l1.2 2.4h4.6l1.2-2.4h5" fill="none" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/></svg>',
+  look: '<svg viewBox="0 0 24 24" width="22" height="22"><path d="M12 3a9 9 0 1 0 0 18c1.4 0 2-.9 2-1.8 0-1.4-1.2-1.6-1.2-2.8 0-1 .8-1.6 1.8-1.6H17a4 4 0 0 0 4-4C21 6.6 17 3 12 3z" fill="currentColor"/><circle cx="7.5" cy="11" r="1.5" fill="#fff"/><circle cx="10.5" cy="7" r="1.5" fill="#fff"/><circle cx="15" cy="7.5" r="1.5" fill="#fff"/></svg>',
+  more: '<svg viewBox="0 0 24 24" width="22" height="22"><circle cx="5" cy="12" r="2.2" fill="currentColor"/><circle cx="12" cy="12" r="2.2" fill="currentColor"/><circle cx="19" cy="12" r="2.2" fill="currentColor"/></svg>'
+};
+const SECTIONS = [
+  ['home', 'Home', ICONS.home, ['notifications', 'status']],
+  ['posts', 'Posts', ICONS.posts, ['posts', 'new', 'highlights', 'planner']],
+  ['inbox', 'Inbox', ICONS.inbox, ['comments', 'guestbook', 'suggestions']],
+  ['look', 'Look', ICONS.look, ['themes', 'designs']],
+  ['more', 'More', ICONS.more, ['site', 'friends', 'travel', 'files']]
+];
+const sectionOf = (id) => SECTIONS.find(([, , , pages]) => pages.includes(id))?.[0] || 'posts';
+// (Each section remembers the page you were last on in it.)
+const lastIn = {};
+
 let friendToOpen = null;
 function go(id, friend) {
+  if (hooks.go && hooks.go(id) === false) return;
   tab = id;
+  lastIn[sectionOf(id)] = id;
   friendToOpen = friend || null;
   if (id === 'new' && !editor) editor = newEditor('thoughts');
   if (id !== 'travel') travel = null;
@@ -218,7 +265,9 @@ function go(id, friend) {
 }
 
 function draw() {
-  const views = { notifications: viewNotifications, posts: viewPosts, new: viewEditor, guestbook: viewGuestbook, comments: viewComments, suggestions: viewSuggestions, status: () => viewSite('status'), friends: () => { const k = friendToOpen; friendToOpen = null; return viewFriends(friendsCtx, k); }, site: () => viewSite('site'), designs: viewDesigns, themes: () => viewThemes(themesCtx), travel: viewTravel, files: viewFiles };
+  const views = { notifications: viewNotifications, posts: viewPosts, new: viewEditor, highlights: viewHighlights, planner: viewPlanner, guestbook: viewGuestbook, comments: viewComments, suggestions: viewSuggestions, status: () => viewSite('status'), friends: () => { const k = friendToOpen; friendToOpen = null; return viewFriends(friendsCtx, k); }, site: () => viewSite('site'), picture: () => h('div', { class: 'field' }, pictureChooser()), designs: viewDesigns, themes: () => viewThemes(themesCtx), travel: viewTravel, files: viewFiles };
+  // (On the site, nothing to draw into while no back office page is open.)
+  if (!panel?.isConnected) return;
   panel.replaceChildren(views[tab]());
 }
 
@@ -252,7 +301,7 @@ const stampNow = () => {
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
 };
 // The fields site.md can hold, kept as they are when only the status changes.
-const SITE_KEYS = ['name', 'owner', 'status', 'presence', 'status_updated', 'now_playing', 'countdown', 'countdown_date', 'countdown_icon', 'tagline', 'comments', 'top_room'];
+const SITE_KEYS = ['name', 'owner', 'picture', 'status', 'presence', 'status_updated', 'now_playing', 'countdown', 'countdown_date', 'countdown_icon', 'tagline', 'comments', 'top_room'];
 // Changes one setting in site.md, keeping everything else as it is.
 async function setSiteField(key, value) {
   const siteRaw = await readFile('site.md');
@@ -287,7 +336,7 @@ function topRoomControls() {
     'fieldset',
     { class: 'group' },
     h('legend', null, 'On a phone’s Home Screen'),
-    h('p', { class: 'hint' }, 'Opened from the Home Screen, an iPhone puts its clock over the top of the page and fades out what’s under it. If the top bar looks washed out, give it more room. This is for the site and this back office, and only when opened from the Home Screen.'),
+    h('p', { class: 'hint' }, 'Opened from the Home Screen, an iPhone puts its clock over the top of the page and fades out what’s under it. If the top bar looks washed out, give it more room. This is for the whole site, and only when it’s opened from the Home Screen.'),
     h('div', { class: 'field' }, h('span', { class: 'label' }, 'Room at the top'), row),
     onHomeScreen() ? h('p', { class: 'hint' }, 'You’re on the Home Screen now, so you can see it change as you choose.') : null
   );
@@ -378,31 +427,86 @@ function viewPosts() {
 }
 
 
+// A post without a picture: the first letter of its kind, in its kind's colour.
+const KIND_COLOURS = { thoughts: '#2a63e0', places: '#c0563a', photos: '#e08a1e', lists: '#3a9a5b', quotes: '#7a7f8c', books: '#8a5a33', films: '#b8323f', podcasts: '#168f8a', music: '#7b4fc4', tv: '#2f3b52' };
+const letterTile = (p) => h('span', { class: 'row-thumb none', style: { background: p.type === 'places' && p.category ? catColor(p.category) : KIND_COLOURS[p.type] || '#2a63e0' } }, (TYPE_LABEL[p.type] || '?')[0]);
+// One post in the list: tap it to edit; the rest (pin, the profile grid, delete) is in its ⋯ menu.
 function postRow(p) {
   const [cls, label] = status(p);
+  const name = p.title || p.excerpt || '(no text)';
+  const pic = p.photos?.[0] || p.cover || '';
+  const more = h(
+    'details',
+    { class: 'row-more' },
+    h('summary', { 'aria-label': `More for ${name}`, title: 'More' }, '⋯'),
+    h(
+      'div',
+      { class: 'row-menu' },
+      h('button', { type: 'button', class: 'btn small', onclick: () => edit(p) }, 'Edit'),
+      h('button', { type: 'button', class: 'btn small', 'aria-pressed': String(!!p.pinned), onclick: () => togglePin(p) }, p.pinned ? 'Unpin' : 'Pin'),
+      p.photos?.length ? h('button', { type: 'button', class: 'btn small', 'aria-pressed': String(!!p.profile), title: 'Show it on the profile grid on your About page', onclick: () => toggleFlag(p, 'profile', p.profile ? 'Off the profile grid.' : 'On your profile grid.') }, p.profile ? 'Off grid' : 'To grid') : null,
+      HL_SHELVES[p.type] ? h('button', { type: 'button', class: 'btn small', 'aria-pressed': String(!!hlRank(p)), onclick: () => (hlRank(p) ? takeOutHighlight(p) : addHighlight(p)) }, hlRank(p) ? '★ Out of highlights' : '★ Add to highlights') : null,
+      h('button', { type: 'button', class: 'btn small danger', onclick: () => removePost(p) }, 'Delete')
+    )
+  );
+  // (Closes when you tap elsewhere.)
+  more.addEventListener('toggle', () => {
+    if (!more.open) return;
+    const away = (e) => {
+      if (!more.contains(e.target)) {
+        more.open = false;
+        document.removeEventListener('click', away, true);
+      }
+    };
+    document.addEventListener('click', away, true);
+  });
   return h(
     'div',
-    { class: 'list-row' },
-    h('span', { class: 'dot', style: { background: p.type === 'places' ? catColor(p.category) : '#2a63e0' } }),
-    h('div', { class: 'grow' }, h('strong', null, p.pinned ? '📌 ' : '', p.title || p.excerpt || '(no text)'), h('small', null, `${TYPE_LABEL[p.type]} · ${niceDate(p.date, true)}${p.error ? ' · ' + p.error : ''}`)),
-    h('span', { class: 'pill ' + cls }, label),
-    h('button', { type: 'button', class: 'btn small', 'aria-pressed': String(!!p.pinned), onclick: () => togglePin(p) }, p.pinned ? 'Unpin' : 'Pin'),
-    p.photos?.length ? h('button', { type: 'button', class: 'btn small', 'aria-pressed': String(!!p.profile), title: 'Show it on the profile grid on your About page', onclick: () => toggleFlag(p, 'profile', p.profile ? 'Off the profile grid.' : 'On your profile grid.') }, p.profile ? 'Off grid' : 'To grid') : null,
-    h('button', { type: 'button', class: 'btn small', onclick: () => edit(p) }, 'Edit'),
-    h('button', { type: 'button', class: 'btn small danger', onclick: () => removePost(p) }, 'Delete')
+    { class: 'list-row post-row' + (cls ? ' is-' + cls : '') },
+    h(
+      'button',
+      { type: 'button', class: 'row-main', 'aria-label': `Edit ${name}`, onclick: () => edit(p) },
+      pic ? h('img', { class: 'row-thumb', src: pic, alt: '', loading: 'lazy', onerror: (e) => e.currentTarget.replaceWith(letterTile(p)) }) : letterTile(p),
+      h(
+        'span',
+        { class: 'row-text' },
+        h('strong', null, name),
+        h('small', null, `${TYPE_LABEL[p.type]} · ${niceDate(p.date, true)}${p.error ? ' · ' + p.error : ''}`),
+        h(
+          'span',
+          { class: 'row-badges' },
+          cls ? h('span', { class: 'pill ' + cls }, label) : null,
+          p.pinned ? h('span', { class: 'row-badge' }, '📌 Pinned') : null,
+          hlRank(p) ? h('span', { class: 'row-badge gold' }, `★ Highlight №${hlRank(p)}`) : null,
+          p.profile ? h('span', { class: 'row-badge' }, '▦ On the grid') : null,
+          Array.isArray(p.comments) && p.comments.length ? h('span', { class: 'row-badge' }, `💬 ${p.comments.length}`) : null
+        )
+      )
+    ),
+    more
   );
 }
 // What a search looks through: the title, the words, the kind of post, where and who.
 const postWords = (p) => [p.title, p.excerpt, TYPE_LABEL[p.type], p.city, p.area, p.country, p.creator, p.category && catLabel(p.category), p.status, niceDate(p.date, true), p.slug].filter(Boolean).join(' ').toLowerCase();
 let postQuery = '';
+let postType = '';
 const openMonths = new Set();
 // A search box, then the ten newest posts, then the rest folded away by month, newest first.
-function postsList(posts) {
+function postsList(all) {
+  let posts = all;
   const results = h('div', { class: 'post-results' });
   const search = h('input', { class: 'input', type: 'search', value: postQuery, placeholder: `Search ${posts.length} posts: a title, a word, a city, "film"…`, 'aria-label': 'Search posts' });
+  // Chips for each kind of post you have (and All).
+  const kinds = TYPES.filter(([id]) => all.some((p) => p.type === id));
+  const chips = h('div', { class: 'chip-row post-kinds', role: 'radiogroup', 'aria-label': 'Show' });
+  const drawChips = () =>
+    chips.replaceChildren(
+      ...[['', 'All'], ...kinds].map(([id, label]) => h('button', { type: 'button', role: 'radio', class: 'chip-btn', 'aria-checked': String(postType === id), 'aria-pressed': String(postType === id), onclick: () => { postType = id; drawChips(); show(); } }, label))
+    );
   const show = () => {
+    posts = postType ? all.filter((p) => p.type === postType) : all;
     const words = postQuery.trim().toLowerCase().split(/\s+/).filter(Boolean);
-    if (words.length) {
+    if (words.length || postType) {
       const hits = posts.filter((p) => {
         const hay = postWords(p);
         return words.every((w) => hay.includes(w));
@@ -441,8 +545,318 @@ function postsList(posts) {
     postQuery = search.value;
     show();
   });
+  drawChips();
   show();
-  return h('div', { class: 'posts-box' }, search, results);
+  return h('div', { class: 'posts-box' }, search, kinds.length > 1 ? chips : null, results);
+}
+
+// ---------- the highlights cabinet (highlights.md) ----------
+// Five shelves (places, music, films, TV, podcasts), five on each, best first, each with a line on
+// why. Only posts that are live go in; the site shows the cabinet on the About page.
+const HL_SHELVES = { places: 'Places', music: 'Music', films: 'Films', tv: 'TV', podcasts: 'Podcasts' };
+const HL_MAX = 5;
+const idOf = (p) => `${p.type}/${String(p.key || '').split('/').pop().replace(/\.md$/i, '') || p.slug}`;
+const hlList = (type) => (data.highlights?.[type] || []).map((x) => ({ ...x }));
+const hlRank = (p) => (HL_SHELVES[p.type] ? hlList(p.type).findIndex((x) => x.post === idOf(p)) + 1 : 0);
+function highlightsText(all, past = []) {
+  const lines = Object.keys(HL_SHELVES).filter((k) => all[k]?.length).map((k) => `${k}: ${JSON.stringify(all[k].slice(0, HL_MAX).map(({ post, why }) => (why ? { post, why } : { post })))}`);
+  if (past.length) lines.push(`past: ${JSON.stringify(past.slice(0, HL_PAST_MAX).map(({ post, why, until }) => ({ post, ...(why ? { why } : {}), ...(until ? { until } : {}) })))}`);
+  return `---\n${lines.join('\n')}\n---\n`;
+}
+// Whatever leaves a shelf goes into the room's library ("Once in the cabinet"), newest first, with
+// its line on why; anything that goes back in comes out of it. (Posts that are gone aren't kept.)
+const HL_PAST_MAX = 40;
+function pastAfter(all) {
+  const was = Object.values(data.highlights || {}).flat();
+  const now = new Set(Object.values(all).flat().map((x) => x.post));
+  const there = new Set(data.posts.map(idOf));
+  const today = new Date().toISOString().slice(0, 10);
+  const left = was.filter((x) => !now.has(x.post) && there.has(x.post)).map((x) => ({ post: x.post, why: x.why || '', until: today }));
+  const gone = new Set(left.map((x) => x.post));
+  return [...left, ...(data.highlightsPast || []).filter((x) => !now.has(x.post) && !gone.has(x.post) && there.has(x.post))].slice(0, HL_PAST_MAX);
+}
+async function saveHighlights(all, past = pastAfter(all)) {
+  await putFile('highlights.md', highlightsText(all, past));
+  await refresh();
+}
+const allHighlights = () => Object.fromEntries(Object.keys(HL_SHELVES).map((k) => [k, hlList(k)]));
+const isLive = (p) => !p.draft && !p.error && !(p.ts > data.now);
+// Adds a post (or changes its line on why). A full shelf asks which one it replaces.
+async function addHighlight(p, why = '') {
+  if (!isLive(p)) return toast('Only posts that are on the site can go in the highlights (not drafts or posts for later).', true);
+  const all = allHighlights();
+  // (Posts that aren't there any more don't take up a place.)
+  const there = new Set(data.posts.map(idOf));
+  all[p.type] = all[p.type].filter((x) => there.has(x.post));
+  const shelf = all[p.type];
+  const at = shelf.findIndex((x) => x.post === idOf(p));
+  if (at >= 0) shelf[at].why = why || shelf[at].why || '';
+  else if (shelf.length < HL_MAX) shelf.push({ post: idOf(p), why });
+  else {
+    const out = await chooseToReplace(p.type, shelf);
+    if (out == null) return toast('Nothing changed.');
+    shelf[out] = { post: idOf(p), why };
+  }
+  try {
+    await saveHighlights(all);
+    toast(at >= 0 ? 'Highlight saved.' : `In the highlights: ${HL_SHELVES[p.type]} №${all[p.type].findIndex((x) => x.post === idOf(p)) + 1}.`);
+    draw();
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+async function takeOutHighlight(p) {
+  const all = allHighlights();
+  all[p.type] = all[p.type].filter((x) => x.post !== idOf(p));
+  try {
+    await saveHighlights(all);
+    toast('Out of the highlights.');
+    draw();
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+// From the editor's Options: in or out, with its line on why.
+async function syncHighlight(p, want) {
+  if (!p) return '';
+  const rank = hlRank(p);
+  if (want.on && (!rank || (hlList(p.type)[rank - 1].why || '') !== want.why.trim())) {
+    await addHighlight(p, want.why.trim());
+    return '';
+  }
+  if (!want.on && rank) await takeOutHighlight(p);
+  return '';
+}
+// A full shelf: which one makes way? (Resolves to its place, or null to leave it.)
+function chooseToReplace(type, shelf) {
+  return new Promise((done) => {
+    const byId = new Map(data.posts.map((x) => [idOf(x), x]));
+    const dlg = h(
+      'dialog',
+      { class: 'hl-choose', 'aria-label': 'The shelf is full' },
+      h('h3', null, `The ${HL_SHELVES[type]} shelf is full`),
+      h('p', { class: 'hint' }, `It holds ${HL_MAX}. Which one makes way?`),
+      h('div', { class: 'list' }, shelf.map((x, i) => h('div', { class: 'list-row' }, h('div', { class: 'grow' }, h('strong', null, `№${i + 1} · ${byId.get(x.post)?.title || x.post}`), x.why ? h('small', null, x.why) : null), h('button', { type: 'button', class: 'btn small', onclick: () => { dlg.close(); done(i); } }, 'Replace this')))),
+      h('div', { class: 'row end' }, h('button', { type: 'button', class: 'btn', onclick: () => { dlg.close(); done(null); } }, 'Keep them all'))
+    );
+    dlg.addEventListener('cancel', () => done(null));
+    dlg.addEventListener('close', () => dlg.remove());
+    document.body.append(dlg);
+    dlg.showModal();
+  });
+}
+// In the editor's Options: a tick, and the line on why (encouraged, never needed).
+const hlWanted = (s) => (s._hl ? s._hl.on : !!(s.key && hlRank({ type: s.type, key: s.key })));
+function highlightOption(s) {
+  const rank = s.key ? hlRank({ type: s.type, key: s.key }) : 0;
+  s._hl ||= { on: !!rank, why: rank ? hlList(s.type)[rank - 1].why || '' : '' };
+  const box = h('input', { type: 'checkbox', checked: s._hl.on });
+  const why = h('input', { class: 'input', value: s._hl.why, maxlength: 160, placeholder: 'Why it’s in your cabinet: a line visitors will read', 'aria-label': 'Why it’s a highlight' });
+  const whyRow = h('div', { class: 'hl-why', hidden: !s._hl.on || null }, why, h('span', { class: 'hint' }, 'One line is plenty. It’s what makes the cabinet yours.'));
+  box.addEventListener('change', () => {
+    s._hl.on = box.checked;
+    whyRow.hidden = !box.checked;
+    if (box.checked) why.focus();
+  });
+  why.addEventListener('input', () => (s._hl.why = why.value));
+  return h('div', { class: 'hl-option' }, h('label', { class: 'row' }, box, rank ? `★ In my highlights (${HL_SHELVES[s.type]} №${rank})` : `★ Add to my highlights (the ${HL_SHELVES[s.type]} shelf)`), whyRow);
+}
+// Once in the cabinet: kept as books in the room's library. Each can be let go of.
+function pastShelf(byId) {
+  const past = (data.highlightsPast || []).slice();
+  return h(
+    'fieldset',
+    { class: 'group hl-shelf hl-past' },
+    h('legend', null, `Once in the cabinet · ${past.length}`),
+    h('p', { class: 'hint' }, 'Whatever makes way is kept as a book in the library beside the cabinet, with its line on why. The library also holds what you’ve recommended: books you recommend, films and shows worth watching again, places you’d go back to.'),
+    past.length
+      ? h(
+          'div',
+          { class: 'list' },
+          past.map((x, i) =>
+            h(
+              'div',
+              { class: 'list-row hl-row' },
+              h('div', { class: 'grow' }, h('strong', null, byId.get(x.post)?.title || x.post), h('small', null, [HL_SHELVES[x.post.split('/')[0]], x.until ? `until ${x.until}` : ''].filter(Boolean).join(' · '))),
+              h('button', { type: 'button', class: 'btn small danger', 'aria-label': `Let go of ${byId.get(x.post)?.title || x.post}`, onclick: async () => {
+                past.splice(i, 1);
+                try {
+                  await saveHighlights(allHighlights(), past);
+                  toast('Taken out of the library.');
+                  draw();
+                } catch (e) {
+                  toast(e.message, true);
+                }
+              } }, '×')
+            )
+          )
+        )
+      : h('p', { class: 'hint' }, 'Nothing yet.')
+  );
+}
+// The Highlights page: each shelf in order, with its lines on why, to move, change or take out.
+function viewHighlights() {
+  const all = allHighlights();
+  const byId = new Map(data.posts.map((x) => [idOf(x), x]));
+  const save = async (msg) => {
+    try {
+      await saveHighlights(all);
+      toast(msg);
+      draw();
+    } catch (e) {
+      toast(e.message, true);
+    }
+  };
+  const shelf = (type) => {
+    const list = all[type];
+    return h(
+      'fieldset',
+      { class: 'group hl-shelf' },
+      h('legend', null, `${HL_SHELVES[type]} · ${list.length} of ${HL_MAX}`),
+      list.length
+        ? h(
+            'div',
+            { class: 'list' },
+            list.map((x, i) => {
+              const p = byId.get(x.post);
+              const why = h('input', { class: 'input', value: x.why || '', maxlength: 160, placeholder: 'Why it’s here (encouraged)', 'aria-label': `Why ${p?.title || x.post} is a highlight` });
+              why.addEventListener('change', () => {
+                x.why = why.value.trim();
+                save('Saved.');
+              });
+              const move = (d) => {
+                list.splice(i + d, 0, list.splice(i, 1)[0]);
+                save('Moved.');
+              };
+              return h(
+                'div',
+                { class: 'list-row hl-row' },
+                h('span', { class: 'hl-rank' }, `№${i + 1}`),
+                h('div', { class: 'grow' }, h('strong', null, p?.title || x.post), !p ? h('small', { class: 'bad' }, 'This post isn’t there any more: take it out.') : p && !isLive(p) ? h('small', null, 'Not on the site right now, so it’s hidden from the cabinet.') : null, why),
+                h('div', { class: 'hl-moves' }, h('button', { type: 'button', class: 'btn small', disabled: i === 0 || null, 'aria-label': 'Move up', onclick: () => move(-1) }, '↑'), h('button', { type: 'button', class: 'btn small', disabled: i === list.length - 1 || null, 'aria-label': 'Move down', onclick: () => move(1) }, '↓'), h('button', { type: 'button', class: 'btn small danger', 'aria-label': 'Take it out', onclick: () => { list.splice(i, 1); save('Out of the highlights.'); } }, '×'))
+              );
+            })
+          )
+        : h('p', { class: 'hint' }, `Nothing yet. Add one from a ${HL_SHELVES[type].toLowerCase()} post’s ⋯ menu in Posts, or its Options.`)
+    );
+  };
+  return h(
+    'div',
+    { class: 'field' },
+    h('p', { class: 'hint' }, `Your highlights cabinet, on your About page: the best of your places, music, films, TV and podcasts, up to ${HL_MAX} on each shelf, best first. Each can have a line on why it’s there.`),
+    h('a', { class: 'btn', href: '/#/highlights', target: '_blank', rel: 'noopener' }, 'See the cabinet'),
+    Object.keys(HL_SHELVES).map(shelf),
+    pastShelf(byId)
+  );
+}
+
+// ---------- the planner (planner.md) ----------
+// Lists of things to do, wishes and notes, with a date to do each by. Written here without any
+// Markdown; kept as Markdown (see parsePlanner). Private lists stay in the back office.
+let plannerAt = 0;
+function plannerText(lists) {
+  const one = (t) => String(t || '').replace(/\s+/g, ' ').replace(/\s+[—–]\s+/g, ' - ').trim();
+  const out = ['---', '---'];
+  for (const l of lists) {
+    out.push('', `## ${one(l.name) || 'List'}${l.private ? ' (private)' : ''}`);
+    for (const it of l.items) {
+      if (!one(it.text)) continue;
+      out.push(`- [${it.done ? 'x' : ' '}] ${one(it.text)}${/^\d{4}-\d{2}-\d{2}$/.test(it.due || '') ? ` @${it.due}` : ''}${one(it.note) ? ` — ${one(it.note)}` : ''}`);
+    }
+    // (Notes can't start a line that would read as a heading or a ticked line.)
+    const notes = String(l.notes || '').replace(/^(\s*)(##|[-*]\s+\[)/gm, '$1\\$2').trim();
+    if (notes) out.push('', notes);
+  }
+  return out.join('\n') + '\n';
+}
+function viewPlanner() {
+  const lists = (data.planner || []).map((l) => ({ ...l, items: l.items.map((x) => ({ ...x })) }));
+  plannerAt = Math.min(plannerAt, Math.max(0, lists.length - 1));
+  const save = async (msg = 'Saved.') => {
+    try {
+      await putFile('planner.md', plannerText(lists));
+      await refresh();
+      toast(msg);
+      draw();
+    } catch (e) {
+      toast(e.message, true);
+    }
+  };
+  const newList = () => {
+    const name = lists.length ? 'New list' : 'To do';
+    lists.push({ name, private: false, items: [], notes: '' });
+    plannerAt = lists.length - 1;
+    save('List added.');
+  };
+  if (!lists.length)
+    return h(
+      'div',
+      { class: 'field' },
+      h('p', { class: 'hint' }, 'The Planner on your site: lists of things to do, wishes and notes, a month calendar with what’s due, all in a leather organiser. Lists can be private (only here).'),
+      h('div', { class: 'row' }, h('button', { type: 'button', class: 'btn go', onclick: newList }, '+ Start a list'), h('button', { type: 'button', class: 'btn', onclick: () => { lists.push({ name: 'To do', private: true, items: [], notes: '' }, { name: 'Wishlist', private: false, items: [], notes: '' }, { name: 'Notes', private: false, items: [], notes: '' }); save('Your planner is ready.'); } }, 'To do, Wishlist and Notes'))
+    );
+  const l = lists[plannerAt];
+  const chips = h(
+    'div',
+    { class: 'chip-row pl-lists', role: 'tablist', 'aria-label': 'Lists' },
+    lists.map((x, i) => h('button', { type: 'button', role: 'tab', class: 'chip-btn', 'aria-selected': String(i === plannerAt), 'aria-pressed': String(i === plannerAt), onclick: () => { plannerAt = i; draw(); } }, `${x.private ? '🔒 ' : ''}${x.name}`, h('small', null, ` ${x.items.filter((it) => !it.done).length || ''}`))),
+    lists.length < 12 ? h('button', { type: 'button', class: 'chip-btn', onclick: newList }, '+ New list') : null
+  );
+  const name = h('input', { class: 'input', value: l.name, maxlength: 60, 'aria-label': 'List name' });
+  name.addEventListener('change', () => { l.name = name.value.trim() || 'List'; save(); });
+  const priv = h('input', { type: 'checkbox', checked: l.private });
+  priv.addEventListener('change', () => { l.private = priv.checked; save(priv.checked ? 'Private: only here.' : 'On the site.'); });
+  const move = (d) => { lists.splice(plannerAt + d, 0, lists.splice(plannerAt, 1)[0]); plannerAt += d; save('Moved.'); };
+  const head = h(
+    'div',
+    { class: 'pl-head' },
+    field('Name', name),
+    h('label', { class: 'row' }, priv, '🔒 Private (only you see it, signed in; never on the site)'),
+    h('div', { class: 'row' }, h('button', { type: 'button', class: 'btn small', disabled: plannerAt === 0 || null, onclick: () => move(-1) }, '← Earlier tab'), h('button', { type: 'button', class: 'btn small', disabled: plannerAt === lists.length - 1 || null, onclick: () => move(1) }, 'Later tab →'), h('button', { type: 'button', class: 'btn small danger', onclick: () => { if (!confirm(`Delete the list “${l.name}” and everything on it?`)) return; lists.splice(plannerAt, 1); plannerAt = Math.max(0, plannerAt - 1); save('List deleted.'); } }, 'Delete list'))
+  );
+  const row = (it, i) => {
+    const done = h('input', { type: 'checkbox', checked: it.done, 'aria-label': `${it.text}: done` });
+    done.addEventListener('change', () => { it.done = done.checked; save(it.done ? 'Done ✓' : 'Not done yet.'); });
+    const text = h('input', { class: 'input', value: it.text, maxlength: 200, 'aria-label': 'What' });
+    text.addEventListener('change', () => { if (!text.value.trim()) return; it.text = text.value.trim(); save(); });
+    const due = h('input', { class: 'input', type: 'date', value: it.due || '', 'aria-label': 'By when' });
+    due.addEventListener('change', () => { it.due = due.value; save(); });
+    const note = h('input', { class: 'input', value: it.note || '', maxlength: 300, placeholder: 'A note (optional)', 'aria-label': 'Note' });
+    note.addEventListener('change', () => { it.note = note.value.trim(); save(); });
+    const mv = (d) => { l.items.splice(i + d, 0, l.items.splice(i, 1)[0]); save('Moved.'); };
+    return h(
+      'div',
+      { class: 'list-row pl-item' + (it.done ? ' done' : '') },
+      done,
+      h('div', { class: 'grow' }, text, h('div', { class: 'pl-sub' }, due, note)),
+      h('div', { class: 'hl-moves' }, h('button', { type: 'button', class: 'btn small', 'aria-label': 'Move up', disabled: i === 0 || null, onclick: () => mv(-1) }, '↑'), h('button', { type: 'button', class: 'btn small', 'aria-label': 'Move down', disabled: i === l.items.length - 1 || null, onclick: () => mv(1) }, '↓'), h('button', { type: 'button', class: 'btn small danger', 'aria-label': 'Take it off', onclick: () => { l.items.splice(i, 1); save('Taken off.'); } }, '×'))
+    );
+  };
+  const addText = h('input', { class: 'input', maxlength: 200, placeholder: /wish/i.test(l.name) ? 'Something you’d love…' : 'Something to do…', 'aria-label': 'Add to the list' });
+  const addDue = h('input', { class: 'input', type: 'date', 'aria-label': 'By when (optional)' });
+  const add = () => {
+    const t = addText.value.trim();
+    if (!t) return addText.focus();
+    l.items.push({ text: t, done: false, due: addDue.value, note: '' });
+    save('Added.').then(() => document.querySelector('.pl-add input')?.focus());
+  };
+  addText.addEventListener('keydown', (e) => e.key === 'Enter' && (e.preventDefault(), add()));
+  const notes = h('textarea', { class: 'textarea', rows: 5, placeholder: 'Notes for this list, in your own words.', 'aria-label': 'Notes' });
+  notes.value = l.notes || '';
+  notes.addEventListener('change', () => { l.notes = notes.value; save(); });
+  const open = l.items.filter((x) => !x.done).length;
+  return h(
+    'div',
+    { class: 'field planner-admin' },
+    h('p', { class: 'hint' }, 'Your Planner: lists of things to do, wishes and notes, each with a date to do it by if you like. Dated things show in the month on your site. Kept as planner.md.'),
+    h('a', { class: 'btn', href: '/#/planner', target: '_blank', rel: 'noopener' }, 'See the planner'),
+    chips,
+    head,
+    h('div', { class: 'row pl-add' }, addText, addDue, h('button', { type: 'button', class: 'btn go', onclick: add }, 'Add')),
+    l.items.length ? h('p', { class: 'hint' }, `${open} to go · ${l.items.length - open} done`) : null,
+    h('div', { class: 'list' }, l.items.map(row)),
+    field('Notes', notes, 'Shown under the list, in handwriting.')
+  );
 }
 
 // Turns a true/false line in a post's header on or off, changing nothing else in the file.
@@ -549,16 +963,19 @@ function storedDraft() {
   }
 }
 let draftTimer;
-panel.addEventListener('input', () => {
-  if (tab !== 'new') return;
-  clearTimeout(draftTimer);
-  draftTimer = setTimeout(keepDraft, 600);
-});
-panel.addEventListener('click', () => {
-  if (tab !== 'new') return;
-  clearTimeout(draftTimer);
-  draftTimer = setTimeout(keepDraft, 600);
-});
+// What you're typing is kept as you go, wherever the editor is.
+function wirePanel(el) {
+  if (!el || el._wired) return;
+  el._wired = true;
+  const later = () => {
+    if (tab !== 'new') return;
+    clearTimeout(draftTimer);
+    draftTimer = setTimeout(keepDraft, 600);
+  };
+  el.addEventListener('input', later);
+  el.addEventListener('click', later);
+}
+wirePanel(panel);
 window.addEventListener('pagehide', () => tab === 'new' && keepDraft());
 
 function draftBanner(inEditor = false) {
@@ -616,6 +1033,7 @@ async function edit(p) {
     body: p.body,
     draft: p.draft,
     pinned: !!p.pinned,
+    friends_only: !!p.friends_only,
     profile: !!p.profile,
     font: p.font || '',
     card: p.card || '',
@@ -764,6 +1182,7 @@ function buildText(s) {
   if (s.type === 'places') fm.floppy_journal = one(clean(s.floppy_journal));
   fm.draft = s.draft;
   fm.pinned = s.pinned;
+  fm.friends_only = s.friends_only || null;
   fm.font = s.font || null;
   // How its card is dressed, and a ribbon of its own (only what's been chosen is written).
   fm.card = s.card || null;
@@ -1041,7 +1460,7 @@ async function save(s, btn) {
       await refresh();
     } catch {
       toast("Saved. The list couldn't be refreshed just now; reload the page to see it.");
-      go('posts');
+      finishEditing();
       return;
     }
     // Belt and braces: if the site still can't read what was saved, say so and reopen it.
@@ -1062,8 +1481,14 @@ async function save(s, btn) {
         statusNote = ` (The status couldn't be updated: ${e.message})`;
       }
     }
-    toast((s.draft ? 'Saved as a draft.' : later ? 'Saved. It goes live at the time you set.' : 'Published!') + statusNote);
-    go('posts');
+    // Into (or out of) the highlights cabinet, as ticked in Options.
+    let hlNote = '';
+    if (s._hl && HL_SHELVES[s.type]) {
+      if (s.draft || later) hlNote = s._hl.on ? ' (It goes in the highlights once it’s live: add it then.)' : '';
+      else hlNote = await syncHighlight(saved || data.posts.find((p) => p.key === key), s._hl).catch((e) => ` (Highlights: ${e.message})`);
+    }
+    toast((s.draft ? 'Saved as a draft.' : later ? 'Saved. It goes live at the time you set.' : 'Published!') + statusNote + hlNote);
+    finishEditing();
   } catch (e) {
     toast(e.message, true);
     // A header mistake caught by the server: keep the text open with the problem showing.
@@ -1567,6 +1992,38 @@ const KEEPSAKES = [
   { types: ['thoughts'], group: 'Work', plain: true, noPrice: true, id: 'tgif', list: 'tgif', name: 'Friday stamp', sub: 'week done', label: 'the stamp', first: '+ Add a line', ph: 'e.g. FRIDAY!', hint: 'The first line goes in the stamp.' },
   { types: ['thoughts'], group: 'Work', plain: true, noPrice: true, id: 'deadline', list: 'deadline', name: 'Deadline', sub: 'circled on the calendar', label: 'the day', first: '+ Add a line', ph: 'e.g. 28', hint: 'A day number on the first line is circled.' },
   { types: ['thoughts'], group: 'Work', plain: true, noPrice: true, id: 'employeemonth', list: 'employeemonth', name: 'Employee of the month', sub: 'framed', label: 'the name', first: '+ Add a line', ph: 'e.g. Me, obviously', hint: 'The first line goes under the picture.' },
+  { types: ['places', 'thoughts'], group: 'Food & drink', plain: true, noPrice: true, id: 'menucard', list: 'menucard', name: 'Menu card', sub: 'what you ate', label: 'the dishes', first: '+ Add a line', ph: 'e.g. Crab linguine', hint: 'One dish a line; the post’s title goes at the top.' },
+  { types: ['places', 'thoughts'], group: 'Food & drink', plain: true, noPrice: true, id: 'winelabel', list: 'winelabel', name: 'Wine label', sub: 'a bottle worth keeping', label: 'the name, then a year', first: '+ Add a line', ph: 'e.g. House red', hint: 'The first line is the wine; a year on the next goes on the band.' },
+  { types: ['places', 'thoughts'], group: 'Food & drink', plain: true, noPrice: true, id: 'recipecard', list: 'recipecard', name: 'Recipe card', sub: 'an index card', label: 'the dish, then what goes in', first: '+ Add a line', ph: 'e.g. Grandma’s scones', hint: 'The first line is the dish, then the ingredients or steps.' },
+  { types: ['places', 'thoughts'], group: 'Food & drink', plain: true, noPrice: true, id: 'sugarpacket', list: 'sugarpacket', name: 'Sugar packet', sub: 'from the café', label: 'printed on it', first: '+ Add a line', ph: 'e.g. Demerara', hint: 'The first line is printed on the packet; the rest is your note.' },
+  { types: ['places', 'thoughts'], group: 'Food & drink', plain: true, noPrice: true, id: 'teabagtag', list: 'teabagtag', name: 'Tea bag tag', sub: 'on its string', label: 'the tea', first: '+ Add a line', ph: 'e.g. Earl Grey', hint: 'The first line goes on the tag.' },
+  { types: ['places', 'thoughts'], group: 'Food & drink', plain: true, noPrice: true, id: 'chopsticks', list: 'chopsticks', name: 'Chopsticks', sub: 'in their paper sleeve', label: 'printed on the sleeve', first: '+ Add a line', ph: 'e.g. Thank you', hint: 'The first line is printed on the sleeve.' },
+  { types: ['places', 'thoughts'], group: 'Food & drink', plain: true, noPrice: true, id: 'bakerybox', list: 'bakerybox', name: 'Bakery box', sub: 'tied with string', label: 'the bakery', first: '+ Add a line', ph: 'e.g. Corner bakery', hint: 'The first line goes on the sticker.' },
+  { types: ['places', 'thoughts'], group: 'Food & drink', plain: true, noPrice: true, id: 'tablenumber', list: 'tablenumber', name: 'Table number', sub: 'a folded card', label: 'the number', first: '+ Add a line', ph: 'e.g. 12', hint: 'A number on the first line; then your note.' },
+  { types: ['thoughts', 'photos'], group: 'Home & cosy', plain: true, noPrice: true, id: 'candle', list: 'candle', name: 'Candle', sub: 'lit', label: 'written beside it', first: '+ Add a line', ph: 'e.g. A quiet evening in', hint: 'With your words beside it.' },
+  { types: ['thoughts', 'photos'], group: 'Home & cosy', plain: true, noPrice: true, id: 'housekey', list: 'housekey', name: 'House key', sub: 'on its fob', label: 'on the fob', first: '+ Add a line', ph: 'e.g. New flat!', hint: 'The first line goes on the fob.' },
+  { types: ['thoughts', 'photos'], group: 'Home & cosy', plain: true, noPrice: true, id: 'planttag', list: 'planttag', name: 'Plant label', sub: 'in the pot', label: 'the plant, then care', first: '+ Add a line', ph: 'e.g. Basil', hint: 'The first line is the plant; then a note or two in pencil.' },
+  { types: ['thoughts', 'photos'], group: 'Home & cosy', plain: true, noPrice: true, id: 'knitsquare', list: 'knitsquare', name: 'Knitted square', sub: 'a swatch', label: 'written beside it', first: '+ Add a line', ph: 'e.g. Cast on, finally', hint: 'With your words beside it.' },
+  { types: ['thoughts', 'photos'], group: 'Home & cosy', plain: true, noPrice: true, id: 'hotwaterbottle', list: 'hotwaterbottle', name: 'Hot water bottle', sub: 'cold night', label: 'written beside it', first: '+ Add a line', ph: 'e.g. Warm feet', hint: 'With your words beside it.' },
+  { types: ['thoughts', 'photos'], group: 'Home & cosy', plain: true, noPrice: true, id: 'doormat', list: 'doormat', name: 'Doormat', sub: 'a word at the door', label: 'the word', first: '+ Add a line', ph: 'e.g. Welcome', hint: 'The first line goes on the mat.' },
+  { types: ['thoughts', 'photos'], group: 'Home & cosy', plain: true, noPrice: true, id: 'jamjar', list: 'jamjar', name: 'Jam jar', sub: 'homemade', label: 'what’s in it', first: '+ Add a line', ph: 'e.g. Strawberry', hint: 'The first line goes on the label (with the month you made it).' },
+  { types: ['thoughts', 'photos'], group: 'Home & cosy', plain: true, noPrice: true, id: 'fridgenote', list: 'fridgenote', name: 'Note on the fridge', sub: 'held by a magnet', label: 'the note', first: '+ Add a line', ph: 'e.g. milk, eggs', hint: 'Each line in your handwriting.' },
+  { types: ['places', 'photos'], group: 'Travel & transport', plain: true, noPrice: true, id: 'trainticket', list: 'trainticket', name: 'Train ticket', sub: 'from and to', label: 'from, then to', first: '+ Add a line', ph: 'e.g. Birmingham', hint: 'The first line is where from, the second where to (or the place).' },
+  { types: ['places', 'photos'], group: 'Travel & transport', plain: true, noPrice: true, id: 'ferrypass', list: 'ferrypass', name: 'Ferry pass', sub: 'across the water', label: 'where to', first: '+ Add a line', ph: 'e.g. The islands', hint: 'The first line is where you crossed to.' },
+  { types: ['places', 'photos'], group: 'Travel & transport', plain: true, noPrice: true, id: 'travelpin', list: 'travelpin', name: 'Map pin', sub: 'with a paper flag', label: 'on the flag', first: '+ Add a line', ph: 'e.g. Here!', hint: 'The first line goes on the flag (or the place).' },
+  { types: ['places', 'photos'], group: 'Travel & transport', plain: true, noPrice: true, id: 'passportstamp', list: 'passportstamp', name: 'Passport stamp', sub: 'in ink', label: 'the place', first: '+ Add a line', ph: 'e.g. Lisbon', hint: 'The first line is stamped with the day (just the place, nothing official).' },
+  { types: ['places', 'photos'], group: 'Travel & transport', plain: true, noPrice: true, id: 'suitcasesticker', list: 'suitcasesticker', name: 'Luggage label', sub: 'from an old hotel', label: 'the place, then a line', first: '+ Add a line', ph: 'e.g. The Riviera', hint: 'The first line is the place; the second goes underneath.' },
+  { types: ['places', 'photos'], group: 'Travel & transport', plain: true, noPrice: true, id: 'platform', list: 'platform', name: 'Platform sign', sub: 'at the station', label: 'the number, then where to', first: '+ Add a line', ph: 'e.g. 4', hint: 'A number on the first line; then where the trains go.' },
+  { types: ['places', 'photos'], group: 'Travel & transport', plain: true, noPrice: true, id: 'seatres', list: 'seatres', name: 'Seat reservation', sub: 'coach and seat', label: 'the seat, then where to', first: '+ Add a line', ph: 'e.g. Coach C · Seat 42', hint: 'The first line is the seat; the second where to.' },
+  { types: ['places', 'photos'], group: 'Travel & transport', plain: true, noPrice: true, id: 'milesign', list: 'milesign', name: 'Road sign', sub: 'how far', label: 'where, then miles', first: '+ Add a line', ph: 'e.g. The coast', hint: 'The first line is where; a number on the second is the miles.' },
+  { types: ['thoughts', 'photos', 'places'], group: 'Celebrations & family', plain: true, noPrice: true, id: 'birthdaycard', list: 'birthdaycard', name: 'Birthday card', sub: 'with a message inside', label: 'an age, then the message', first: '+ Add a line', ph: 'e.g. 30', hint: 'An age on the first line goes on the front; the rest inside.' },
+  { types: ['thoughts', 'photos', 'places'], group: 'Celebrations & family', plain: true, noPrice: true, id: 'gifttag', list: 'gifttag', name: 'Gift tag', sub: 'to and from', label: 'to, then from', first: '+ Add a line', ph: 'e.g. Mum', hint: 'The first line is who it’s to, the second who from.' },
+  { types: ['thoughts', 'photos', 'places'], group: 'Celebrations & family', plain: true, noPrice: true, id: 'cakecandle', list: 'cakecandle', name: 'Cake candle', sub: 'a number', label: 'the number', first: '+ Add a line', ph: 'e.g. 7', hint: 'A number on the first line; then your wish.' },
+  { types: ['thoughts', 'photos', 'places'], group: 'Celebrations & family', plain: true, noPrice: true, id: 'placecard', list: 'placecard', name: 'Place card', sub: 'at the table', label: 'the name', first: '+ Add a line', ph: 'e.g. Sami', hint: 'The first line is the name; the second underneath.' },
+  { types: ['thoughts', 'photos', 'places'], group: 'Celebrations & family', plain: true, noPrice: true, id: 'favour', list: 'favour', name: 'Favour', sub: 'a little bag of sweets', label: 'on the tag', first: '+ Add a line', ph: 'e.g. Thank you for coming', hint: 'The first line goes on the tag; the second under it.' },
+  { types: ['thoughts', 'photos', 'places'], group: 'Celebrations & family', plain: true, noPrice: true, id: 'bootie', list: 'bootie', name: 'Baby bootie', sub: 'knitted', label: 'written beside it', first: '+ Add a line', ph: 'e.g. So tiny', hint: 'With your words beside it.' },
+  { types: ['thoughts', 'photos', 'places'], group: 'Celebrations & family', plain: true, noPrice: true, id: 'partyhat', list: 'partyhat', name: 'Party hat', sub: 'striped', label: 'written beside it', first: '+ Add a line', ph: 'e.g. Wore it all night', hint: 'With your words beside it.' },
+  { types: ['thoughts', 'photos', 'places'], group: 'Celebrations & family', plain: true, noPrice: true, id: 'thankyou', list: 'thankyou', name: 'Thank-you note', sub: 'folded', label: 'the note', first: '+ Add a line', ph: 'e.g. for everything', hint: 'In your handwriting.' },
   { types: ['books', 'films', 'tv', 'podcasts', 'music', 'thoughts'], group: 'Notes', id: 'note', list: 'note', name: 'Sticky note', sub: 'a thought stuck on', label: 'written on it', first: '+ Add a line', ph: 'e.g. Recommend to Mum', hint: 'A little yellow note, in your handwriting.', plain: true, noPrice: true }
 ];
 // One pool: every keepsake can go on every kind of post that has keepsakes. Each keeps the
@@ -1724,6 +2181,15 @@ function suggestedField(s, rerender) {
   return h('div', { class: 'field' }, h('label', null, 'Suggested by'), input, offer, h('span', { class: 'hint' }, 'Adds a "Suggested by …" stamp to the review.'));
 }
 
+// A fold in the editor: a title, a line saying what's set inside, and its fields. Folds you open
+// stay open while you write (and for the next post).
+const openFolds = new Set();
+function fold(id, title, summary, children) {
+  const box = h('details', { class: 'ed-fold', 'data-fold': id, open: openFolds.has(id) || null }, h('summary', null, h('b', null, title), summary ? h('small', null, summary) : null), h('div', { class: 'ed-fold-body' }, children.filter(Boolean)));
+  box.addEventListener('toggle', () => (box.open ? openFolds.add(id) : openFolds.delete(id)));
+  return box;
+}
+
 function viewEditor() {
   const s = editor || (editor = newEditor('thoughts'));
   const wrap = h('div', { class: 'field' });
@@ -1748,7 +2214,7 @@ function viewEditor() {
         ? h('div', { class: 'info problem' }, h('strong', null, s.problemHidden ? 'This post is hidden from the site because its header has a mistake. ' : 'Not saved yet: the header has a mistake. '), 'Fix it below and save. Text with a colon, # or quotes in it needs "double quotes" around it.', h('pre', { class: 'problem-msg' }, String(s.problem).replace(/^The header has a mistake\. /, '')))
         : h('div', { class: 'info' }, 'You are editing the file itself. The part between the --- lines is the header; your words go underneath.'),
       field(s.key || keyFor(s), ta),
-      h('div', { class: 'row end' }, s.problemHidden ? h('button', { type: 'button', class: 'btn', onclick: () => { editor = null; forgetDraft(); go('posts'); } }, 'Cancel') : h('button', { type: 'button', class: 'btn', onclick: back }, 'Back to the form'), saveBtn)
+      h('div', { class: 'row end' }, s.problemHidden ? h('button', { type: 'button', class: 'btn', onclick: () => { editor = null; forgetDraft(); finishEditing(); } }, 'Cancel') : h('button', { type: 'button', class: 'btn', onclick: back }, 'Back to the form'), saveBtn)
     );
     return wrap;
   }
@@ -1772,21 +2238,22 @@ function viewEditor() {
     wrap.append(h('p', { class: 'hint' }, `Editing ${TYPE_LABEL[s.type].toLowerCase()} · ${s.key}`));
   }
 
-  if (s.type === 'places') wrap.append(placePicker(s, rerender));
+  const placeEl = s.type === 'places' ? placePicker(s, rerender) : null;
+  if (placeEl) wrap.append(placeEl);
 
   const title = h('input', { class: 'input', value: s.title, maxlength: 140, placeholder: s.type === 'places' ? 'Name of the place' : s.type === 'lists' ? 'Top 5 albums this month' : SHELF[s.type] ? '' : 'Optional' });
   title.addEventListener('input', () => (s.title = title.value));
   wrap.append(field(s.type === 'places' ? 'Place name' : SHELF[s.type] ? SHELF[s.type].titleLabel : 'Title', title));
 
+  // The rest goes in folds that open when you want them (and stay open while you write).
+  const details = [];
+  const keeps = [];
   if (s.type === 'places') {
-    wrap.append(
-      categoryPicker(s, rerender)
-    );
+    wrap.append(categoryPicker(s, rerender), starPicker(s, rerender));
     const ret = h('input', { type: 'checkbox', checked: s.would_return });
     ret.addEventListener('change', () => (s.would_return = ret.checked));
-    wrap.append(starPicker(s, rerender), h('label', { class: 'row' }, ret, 'Stamp it "Would return"'), suggestedField(s, rerender));
-    wrap.append(stampPicker(s, rerender));
-    wrap.append(keepsakesEditor(s, rerender));
+    details.push(h('label', { class: 'row' }, ret, 'Stamp it "Would return"'), suggestedField(s, rerender), stampPicker(s, rerender));
+    keeps.push(keepsakesEditor(s, rerender));
   }
 
   if (SHELF[s.type]) {
@@ -1796,39 +2263,33 @@ function viewEditor() {
       el.addEventListener('input', () => (s[key] = el.value));
       return field(label, el);
     };
-    if (s.type === 'podcasts') wrap.append(text('episode', 'Episode (optional)', 'Leave empty to review the whole show', { maxlength: 140 }));
-    if (s.type === 'books') {
-      wrap.append(h('div', { class: 'grid-2' }, text('pages', 'Pages (optional)', 'e.g. 320', { maxlength: 6, inputmode: 'numeric' }), text('page', 'Up to page (optional)', 'e.g. 142', { maxlength: 6, inputmode: 'numeric' })));
-    }
-    if (s.type === 'tv') {
-      wrap.append(
-        h('div', { class: 'grid-2' }, text('season', 'Season (optional)', 'e.g. 2', { maxlength: 30, inputmode: 'numeric' }), text('episode', 'Up to episode (optional)', 'e.g. 5', { maxlength: 30, inputmode: 'numeric' })),
-        text('network', 'Watched on (optional)', 'e.g. BBC, Netflix', { maxlength: 40 })
-      );
-    }
-    if (s.type === 'music') {
-      wrap.append(h('fieldset', { class: 'group' }, h('legend', null, 'Album or song'), h('div', { class: 'chip-row' }, [['album', 'Album'], ['song', 'Song']].map(([f, label]) => h('button', { type: 'button', class: 'chip-btn', 'aria-pressed': String(s.format === f), onclick: () => { s.format = f; rerender(); } }, label)))));
-      if (s.format === 'song') wrap.append(text('album', 'From the album (optional)', '', { maxlength: 140 }));
-    }
+    // (What it is, by whom, where you are with it and how good it was: up top.)
     wrap.append(
       h('div', { class: 'grid-2' }, text('creator', cfg.creator, '', { maxlength: 100 }), text('year', 'Year', 'e.g. 1989', { maxlength: 10, inputmode: 'numeric' })),
       h('fieldset', { class: 'group' }, h('legend', null, 'Where you are with it'), h('div', { class: 'chip-row' }, cfg.states.map(([w, label]) => h('button', { type: 'button', class: 'chip-btn', 'aria-pressed': String(s.status === w), onclick: () => { s.status = w; rerender(); } }, label)))),
       starPicker(s, rerender)
     );
+    if (s.type === 'podcasts') details.push(text('episode', 'Episode (optional)', 'Leave empty to review the whole show', { maxlength: 140 }));
+    if (s.type === 'books') details.push(h('div', { class: 'grid-2' }, text('pages', 'Pages (optional)', 'e.g. 320', { maxlength: 6, inputmode: 'numeric' }), text('page', 'Up to page (optional)', 'e.g. 142', { maxlength: 6, inputmode: 'numeric' })));
+    if (s.type === 'tv') details.push(h('div', { class: 'grid-2' }, text('season', 'Season (optional)', 'e.g. 2', { maxlength: 30, inputmode: 'numeric' }), text('episode', 'Up to episode (optional)', 'e.g. 5', { maxlength: 30, inputmode: 'numeric' })), text('network', 'Watched on (optional)', 'e.g. BBC, Netflix', { maxlength: 40 }));
+    if (s.type === 'music') {
+      details.push(h('fieldset', { class: 'group' }, h('legend', null, 'Album or song'), h('div', { class: 'chip-row' }, [['album', 'Album'], ['song', 'Song']].map(([f, label]) => h('button', { type: 'button', class: 'chip-btn', 'aria-pressed': String(s.format === f), onclick: () => { s.format = f; rerender(); } }, label)))));
+      if (s.format === 'song') details.push(text('album', 'From the album (optional)', '', { maxlength: 140 }));
+    }
     const rec = h('input', { type: 'checkbox', checked: s.recommend });
     rec.addEventListener('change', () => (s.recommend = rec.checked));
-    wrap.append(h('label', { class: 'row' }, rec, 'Stamp it "Recommended"'));
+    details.push(h('label', { class: 'row' }, rec, 'Stamp it "Recommended"'));
     if (s.type === 'films' || s.type === 'tv') {
       const rw = h('input', { type: 'checkbox', checked: s.rewatch });
       rw.addEventListener('change', () => (s.rewatch = rw.checked));
-      wrap.append(h('label', { class: 'row' }, rw, 'This was a rewatch'));
+      details.push(h('label', { class: 'row' }, rw, 'This was a rewatch'));
     }
-    if (s.type === 'tv') wrap.append(episodeLog(s, rerender));
-    if (s.type === 'books') wrap.append(readingLogEditor(s, rerender));
+    if (s.type === 'tv') details.push(episodeLog(s, rerender));
+    if (s.type === 'books') details.push(readingLogEditor(s, rerender));
     const q = h('textarea', { class: 'textarea short', placeholder: s.type === 'books' ? 'A line you underlined' : s.type === 'music' ? 'A lyric that stuck' : 'A line that stuck' });
     q.value = s.quote;
     q.addEventListener('input', () => (s.quote = q.value));
-    wrap.append(field('Favourite quote (optional)', q), suggestedField(s, rerender));
+    details.push(field('Favourite quote (optional)', q), suggestedField(s, rerender));
   }
 
   if (s.type === 'quotes') {
@@ -1837,37 +2298,58 @@ function viewEditor() {
     wrap.append(field('Source', src));
   }
 
-  if (SHELF[s.type] || s.type === 'thoughts' || s.type === 'photos') wrap.append(keepsakesEditor(s, rerender));
+  if (SHELF[s.type] || s.type === 'thoughts' || s.type === 'photos') keeps.push(keepsakesEditor(s, rerender));
   const body = h('textarea', { class: 'textarea', placeholder: s.type === 'places' ? 'What you ordered, the vibe, would you go back…' : s.type === 'lists' ? '1. One\n2. Two\n3. Three' : s.type === 'quotes' ? '> The line you want to keep.' : SHELF[s.type] ? 'What you thought of it. Leave empty if you just want it on the shelf.' : 'What is on your mind?' });
   body.value = s.body;
   body.addEventListener('input', () => (s.body = body.value));
-  wrap.append(fontPicker(s, body));
-  wrap.append(dressPicker(s));
   wrap.append(field(s.type === 'places' || SHELF[s.type] ? 'Review' : s.type === 'quotes' ? 'Quote' : 'Text', body, 'Markdown works: *italic*, **bold**, [links](https://…), "> " for a quote, "1." for a list.'));
-
-  if (s.type === 'thoughts' || s.type === 'photos') wrap.append(memoryPicker(s, rerender));
-  wrap.append(photoPicker(s, rerender));
-
-  // Lines for Floppy to say about this post, in search and in the screensaver.
-  wrap.append(floppyLines(s, rerender));
+  const photosEl = photoPicker(s, rerender);
+  wrap.append(photosEl);
 
   const date = h('input', { class: 'input', type: 'datetime-local', value: s.date });
   date.addEventListener('change', () => (s.date = date.value));
   const draft = h('input', { type: 'checkbox', checked: s.draft });
   draft.addEventListener('change', () => (s.draft = draft.checked));
+  // Friends only: not on the site at all; your friends see it in their back office.
+  const only = h('input', { type: 'checkbox', checked: !!s.friends_only });
+  only.addEventListener('change', () => (s.friends_only = only.checked));
   const pin = h('input', { type: 'checkbox', checked: s.pinned });
   pin.addEventListener('change', () => (s.pinned = pin.checked));
-  wrap.append(h('label', { class: 'row' }, pin, '📌 Pin it to the top of the feed and its section'));
   // The profile grid on the About page: posts with photos you pick, newest first.
   const grid = h('input', { type: 'checkbox', checked: !!s.profile, disabled: !s.photos.length });
   grid.addEventListener('change', () => {
     s.profile = grid.checked;
     rerender();
   });
-  wrap.append(h('label', { class: 'row' + (s.photos.length ? '' : ' muted') }, grid, s.photos.length ? '▦ Show it on my profile grid (the About page)' : '▦ Show it on my profile grid (add a photo first)'));
   const coverPick = s.profile ? gridCoverPicker(s, rerender) : null;
-  if (coverPick) wrap.append(coverPick);
-  wrap.append(field('Date and time', date, SHELF[s.type] ? 'When you finished it, started it or added it. A time in the future publishes it later.' : 'Pick a time in the future to publish it later.'), h('label', { class: 'row' }, draft, 'Keep as a draft (only you can see it)'));
+
+  // The folds: more about it, keepsakes, how it looks, a memory and Floppy, and the options.
+  const later = s.date && new Date(s.date) > new Date();
+  const fonts = OPTIONS.font.choices;
+  wrap.append(
+    ...[
+    details.length ? fold('details', SHELF[s.type] ? 'More about it' : 'More about the place', '', details) : null,
+    ...keeps,
+    s.type === 'thoughts' || s.type === 'photos' ? memoryPicker(s, rerender) : null,
+    floppyLines(s, rerender),
+    fold('look', 'How it looks', [s.font ? `${fonts[s.font] || 'its own'} font` : 'the site’s font', s.card ? `${CARD_STYLES[s.card] || 'its own'} card` : 'the theme’s card', s.ribbon ? 'a ribbon' : ''].filter(Boolean).join(' · '), [fontPicker(s, body), dressPicker(s)]),
+    fold(
+      'options',
+      'Options',
+      [s.draft ? 'a draft' : later ? 'scheduled' : 'goes live now', s.friends_only ? 'friends only' : '', s.pinned ? 'pinned' : '', s.profile ? 'on the grid' : '', hlWanted(s) ? 'in the highlights' : ''].filter(Boolean).join(' · '),
+      [
+        field('Date and time', date, SHELF[s.type] ? 'When you finished it, started it or added it. A time in the future publishes it later.' : 'Pick a time in the future to publish it later.'),
+        h('label', { class: 'row' }, draft, 'Keep as a draft (only you can see it)'),
+        h('label', { class: 'row' }, only, '👥 Friends only (not on your site for visitors: only your friends see it, signed in on theirs)'),
+        h('label', { class: 'row' }, pin, '📌 Pin it to the top of the feed and its section'),
+        h('label', { class: 'row' + (s.photos.length ? '' : ' muted') }, grid, s.photos.length ? '▦ Show it on my profile grid (the About page)' : '▦ Show it on my profile grid (add a photo first)'),
+        coverPick,
+        HL_SHELVES[s.type] ? highlightOption(s) : null,
+        statusToggle(s)
+      ]
+    )
+    ].filter(Boolean)
+  );
 
   const saveBtn = h('button', { type: 'button', class: 'btn go' }, s.key ? 'Save changes' : 'Publish');
   saveBtn.addEventListener('click', () => {
@@ -1889,14 +2371,65 @@ function viewEditor() {
       toast(e.message, true);
     }
   } }, 'Edit as Markdown');
-  wrap.append(statusToggle(s));
-  wrap.append(h('div', { class: 'row end' }, h('button', { type: 'button', class: 'btn', onclick: () => {
+  wrap.append(h('div', { class: 'row end ed-actions' }, h('button', { type: 'button', class: 'btn', onclick: () => {
     if (isDirty(s) && !confirm(s.key ? 'Close without saving your changes?' : 'Throw away this post?')) return;
     editor = null;
     forgetDraft();
-    go('posts');
+    finishEditing();
   } }, s.key ? 'Cancel' : 'Discard'), rawBtn, saveBtn));
-  return wrap;
+  return editorLayout === 'card' ? asCard(s, wrap, { title, body, placeEl, photosEl }) : wrap;
+}
+
+// ---------- writing inside the post itself (on the site, in owner mode) ----------
+// The same editor, laid out as the post it makes: the kind of post and the day in its head,
+// the title and words where they'll be read (in the post's own type), the photos under them,
+// and everything else in a tray of folds underneath, with Publish at the foot.
+let editorLayout = 'form';
+function asCard(s, wrap, { title, body, placeEl, photosEl }) {
+  const kids = [...wrap.children];
+  const pick = (test) => kids.filter(test);
+  const isFold = (el) => el.matches('details, .memory-pick, .keep-panel, .floppy-panel');
+  const banner = pick((el) => el.classList.contains('draft-banner'));
+  const typeRow = pick((el) => el.classList.contains('type-tabs'));
+  const actions = pick((el) => el.classList.contains('ed-actions'));
+  const titleField = title.closest('.field');
+  const bodyField = body.closest('.field');
+  const folds = pick(isFold);
+  const used = new Set([...banner, ...typeRow, ...actions, ...folds, titleField, bodyField, placeEl, photosEl].filter(Boolean));
+  const essentials = kids.filter((el) => !used.has(el) && !(el.matches('p.hint') && /^Editing /.test(el.textContent)));
+  // Words where they'll be read: no labels, the post's own font, growing as you write.
+  title.classList.add('ied-title');
+  title.setAttribute('aria-label', titleField.querySelector('label')?.textContent || 'Title');
+  if (!title.placeholder || title.placeholder === 'Optional') title.placeholder = s.type === 'places' ? 'Name of the place' : SHELF[s.type] ? SHELF[s.type].titleLabel : 'Title (optional)';
+  photosEl?.classList.add('ied-photos');
+  body.classList.add('ied-text');
+  body.setAttribute('aria-label', bodyField.querySelector('label')?.textContent || 'Text');
+  body.rows = 3;
+  const grow = () => {
+    body.style.height = 'auto';
+    body.style.height = Math.max(90, body.scrollHeight + 2) + 'px';
+  };
+  body.addEventListener('input', grow);
+  requestAnimationFrame(grow);
+  if (s.font && FONT_FAMILIES[s.font]) body.style.fontFamily = title.style.fontFamily = FONT_FAMILIES[s.font];
+  const when = new Date(fromInputDate(s.date).replace(' ', 'T'));
+  const head = h(
+    'header',
+    { class: 'card-head ied-head' },
+    h('span', { class: 'ied-badge' }, s.key ? 'Editing' : 'New'),
+    h('strong', null, TYPE_LABEL[s.type] || 'Post'),
+    h('span', { class: 'ied-when' }, Number.isNaN(+when) ? '' : when.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }))
+  );
+  return h(
+    'article',
+    { class: 'card okit ied', 'data-ied': s.type, 'aria-label': s.key ? `Editing ${s.title || TYPE_LABEL[s.type]}` : `New ${(TYPE_LABEL[s.type] || 'post').toLowerCase()}` },
+    head,
+    ...banner,
+    ...typeRow,
+    h('div', { class: 'card-body ied-body' }, placeEl, title, ...essentials, body, h('span', { class: 'ied-hint' }, 'Markdown works: *italic*, **bold**, [links](https://…)'), photosEl),
+    folds.length ? h('div', { class: 'ied-tray', role: 'group', 'aria-label': 'More for this post' }, ...folds) : null,
+    ...actions
+  );
 }
 
 
@@ -2601,6 +3134,8 @@ function viewSite(part = 'site') {
         const fm = {
           name: inputs.name.value.trim(),
           owner: inputs.owner.value.trim(),
+          // (Kept as it is: changed under Your picture, saved straight away.)
+          picture: data.site?.picture || '',
           status: newStatus,
           presence: st.presence === 'online' ? '' : st.presence,
           status_updated: changed ? new Date().toISOString() : st.status_updated,
@@ -2682,6 +3217,7 @@ function viewSite(part = 'site') {
         logBox,
         h('div', { class: 'row end' }, h('button', { type: 'button', class: 'btn go', onclick: async (e) => { try { await putFile('status-log.md', logBox.value.trim() + '\n'); logRaw = logBox.value.trim(); toast('Past statuses saved.'); await refresh(); } catch (err) { toast(err.message, true); } } }, 'Save past statuses'))
       ),
+      pictureChooser(),
       h('fieldset', { class: 'group' }, h('legend', null, 'About the site'), field('Site name', inputs.name, 'Shown on the welcome screen, every title bar, the tab and the home-screen app.'), field('Your name', inputs.owner), field('Tagline', inputs.tagline, 'Shown on the welcome screen.'), field('About you', about, 'Markdown works here too.'), h('div', { class: 'row end' }, saveSite)),
       categoryManager(),
       topRoomControls(),
@@ -2690,6 +3226,88 @@ function viewSite(part = 'site') {
     // The first two are the status and past statuses; the rest are the site and wishlist.
     wrap.replaceChildren(...(part === 'status' ? parts.slice(0, 2) : parts.slice(2)));
   })();
+  return wrap;
+}
+
+// ---------- your picture ----------
+// A photo of you (cropped square, its hidden data left behind), one of the site's own pictures,
+// or the plain outline. It shows by your name: on the welcome screen, at the top of your profile
+// and, signed in, in the Explore menu and the taskbar. Each choice is saved straight away.
+const PICTURE_SIZE = 480;
+async function squarePhoto(file) {
+  const bmp = await decode(file);
+  const side = Math.min(bmp.width, bmp.height);
+  const c = document.createElement('canvas');
+  c.width = c.height = Math.min(PICTURE_SIZE, side);
+  const g = c.getContext('2d');
+  g.imageSmoothingQuality = 'high';
+  // (The middle of it; a little higher than the middle for a tall photo, where faces usually are.)
+  const sx = (bmp.width - side) / 2;
+  const sy = bmp.height > bmp.width ? (bmp.height - side) * 0.3 : (bmp.height - side) / 2;
+  g.drawImage(bmp, sx, sy, side, side, 0, 0, c.width, c.height);
+  bmp.close?.();
+  return toJpeg(c, 0.88);
+}
+async function setPicture(value) {
+  const before = data.site?.picture || '';
+  await setSiteField('picture', value);
+  // (A photo you've replaced isn't kept.)
+  if (isPhoto(before) && before !== value) await delFile(before).catch(() => {});
+  await refresh();
+}
+function pictureChooser() {
+  const now = () => data.site?.picture || '';
+  const big = h('span', { class: 'pic-now' });
+  const grid = h('div', { class: 'pic-grid', role: 'radiogroup', 'aria-label': 'Pictures' });
+  const busy = (on) => wrap.classList.toggle('busy', on);
+  const choose = async (value, msg) => {
+    busy(true);
+    try {
+      await setPicture(value);
+      toast(msg);
+      draw();
+    } catch (e) {
+      toast(e.message, true);
+    }
+    busy(false);
+  };
+  const file = h('input', { type: 'file', accept: 'image/*,.heic,.heif', class: 'sr' });
+  file.addEventListener('change', async () => {
+    const f = file.files?.[0];
+    file.value = '';
+    if (!f) return;
+    busy(true);
+    try {
+      const blob = await squarePhoto(f);
+      const key = `design/me-${Date.now().toString(36)}.jpg`;
+      await api('upload?key=' + enc(key), { method: 'PUT', body: blob, headers: { 'Content-Type': 'image/jpeg' } });
+      busy(false);
+      await choose(key, 'Your photo is your picture now.');
+    } catch (e) {
+      toast(e.message, true);
+      busy(false);
+    }
+  });
+  const tile = (value, label, inner) =>
+    h('button', { type: 'button', role: 'radio', class: 'pic-pick', 'aria-checked': String(now() === value), 'aria-label': label, title: label, onclick: () => now() !== value && choose(value, value ? `${label}: your picture now.` : 'The plain picture now.') }, h('span', { class: 'pic-frame' + (value ? ' has-pic' : ''), html: inner }));
+  const draw = () => {
+    big.className = 'pic-now pic-frame' + (hasPicture(now()) ? ' has-pic' : '');
+    big.innerHTML = pictureHtml(now(), '#1d3f8a');
+    grid.replaceChildren(
+      ...(isPhoto(now()) ? [tile(now(), 'Your photo', pictureHtml(now()))] : []),
+      ...PICTURE_IDS.map((id) => tile(id, PICTURES[id][0], pictureHtml(id))),
+      tile('', 'Plain', pictureHtml('', '#1d3f8a'))
+    );
+  };
+  const wrap = h(
+    'fieldset',
+    { class: 'group pic-chooser' },
+    h('legend', null, 'Your picture'),
+    h('div', { class: 'pic-top' }, big, h('div', null, h('p', { class: 'hint' }, 'By your name on the welcome screen, at the top of your profile, and in your Explore menu when you’re signed in. A photo is cropped square, and its hidden data (where it was taken, the phone…) is left behind.'), h('label', { class: 'btn' }, '📷 Use a photo…', file))),
+    h('p', { class: 'label' }, 'Or pick one'),
+    grid
+  );
+  draw();
   return wrap;
 }
 
@@ -3069,14 +3687,16 @@ function viewFiles() {
 
 // ---------- start ----------
 
-(async () => {
-  try {
-    await refresh();
-    draw();
-  } catch (e) {
-    panel.replaceChildren(h('p', null, e.message));
-  }
-})();
+// On the back office's own page only; on the site, owner mode starts it (see kit, below).
+if (panel)
+  (async () => {
+    try {
+      await refresh();
+      draw();
+    } catch (e) {
+      panel.replaceChildren(h('p', null, e.message));
+    }
+  })();
 
 // ---------- Designs: the visa in the passport, and keepsakes ----------
 // The visa and keepsakes that come with the site are examples: here they can be swapped for
@@ -3221,7 +3841,7 @@ async function saveVisa(v, saved, btn) {
   btn.disabled = true;
   try {
     if (v.file) v.picture = await uploadDesignPicture(v.file, 'visa');
-    await putFile('passport.md', frontMatter(visaFile(v)) + '\nThe visa in the passport. Change it under Designs in the back office.\n');
+    await putFile('passport.md', frontMatter(visaFile(v)) + '\nThe visa in the passport. Change it under Designs in the Control Panel.\n');
     if (saved.picture && saved.picture !== v.picture) await delFile(saved.picture).catch(() => {});
     if (v.blob) URL.revokeObjectURL(v.blob);
     visaDraft = null;
@@ -3423,7 +4043,7 @@ async function saveKeepsakes(k, saved, btn) {
       const d = k.custom.find((x) => x.id === id);
       if (d) d.picture = await uploadDesignPicture(file, 'keepsake-' + id);
     }
-    await putFile('keepsakes.md', frontMatter(keepFile(k)) + '\nKeepsakes switched off, and ones you designed. Change them under Designs in the back office.\n');
+    await putFile('keepsakes.md', frontMatter(keepFile(k)) + '\nKeepsakes switched off, and ones you designed. Change them under Designs in the Control Panel.\n');
     // Pictures no longer used by any design are removed.
     const now = new Set(k.custom.map((d) => d.picture).filter(Boolean));
     for (const d of saved.custom) if (d.picture && !now.has(d.picture)) await delFile(d.picture).catch(() => {});
@@ -3437,3 +4057,96 @@ async function saveKeepsakes(k, saved, btn) {
     btn.disabled = false;
   }
 }
+
+// ---------- the kit: the back office, used from the site itself ----------
+// In owner mode (/admin/owner.js) the site borrows all of this: it gives the back office a place
+// to draw (a window on a computer, a sheet on a phone), and hears when things change.
+export const kit = {
+  // Where to draw from now on: the page area, and (if wanted) the section and page bars.
+  attach({ panel: el, tabs = null, sections = null, toast: t = null, changed = null, editorDone = null, go: g = null, layout = 'form' } = {}) {
+    editorLayout = layout;
+    panel = el;
+    tabsEl = tabs;
+    sectionsEl = sections;
+    if (t) hooks.toast = t;
+    if (changed) hooks.changed = changed;
+    hooks.editorDone = editorDone;
+    hooks.go = g;
+    wirePanel(el);
+  },
+  data: () => data,
+  refresh,
+  // A page of the back office (posts, themes, friends…), in the attached place.
+  show(id) {
+    if (!data) return;
+    go(id);
+  },
+  // Writing: a new post of a kind, or a post you have.
+  write(type = 'thoughts') {
+    if (editor && isDirty(editor) && !okToReplaceEditor()) return false;
+    editor = newEditor(type);
+    go('new');
+    return true;
+  },
+  async edit(key) {
+    const p = data?.posts.find((x) => x.key === key);
+    if (!p) return toast('That post isn’t there any more.', true);
+    await edit(p);
+  },
+  editing: () => (editor && isDirty(editor) ? editor : null),
+  // The quick things a post's ⋯ menu does.
+  post: (key) => data?.posts.find((x) => x.key === key) || null,
+  togglePin: (p) => togglePin(p),
+  toggleFlag: (p, flag, msg) => toggleFlag(p, flag, msg),
+  addHighlight: (p) => addHighlight(p),
+  takeOutHighlight: (p) => takeOutHighlight(p),
+  highlightRank: (p) => hlRank(p),
+  remove: (p) => removePost(p),
+  setStatus: (text) => setStatus(text),
+  // For doing things where they happen on the site (comments, the guestbook, suggestions, your
+  // status, the planner, the trips wishlist, the highlights): one thing, then everything fresh.
+  async act(fn, msg) {
+    try {
+      await fn();
+      if (msg) toast(msg);
+      await refresh();
+      return true;
+    } catch (e) {
+      toast(e.message, true);
+      return false;
+    }
+  },
+  files: { putFile, delFile, readFile, move: (from, to) => api(`move?key=${enc(from)}&to=${enc(to)}`, { method: 'POST' }) },
+  approveComment: (c) => approveComment(c),
+  commentText: (c, reply) => commentText(c, reply),
+  gbText: (g, reply) => gbText(g.name, g.date, reply, g.message),
+  addSuggestion: (sg) => (KIND_TYPE[sg.kind] ? addToShelf(sg) : addToWishlist(sg)),
+  suggestionGoesTo: (sg) => (KIND_TYPE[sg.kind] ? `your ${SHELF_NAME[KIND_TYPE[sg.kind]]}` : 'your trips wishlist'),
+  setSiteField: (k, v) => setSiteField(k, v),
+  // Your picture: the chooser, for a window or sheet of its own.
+  pictureChooser: () => pictureChooser(),
+  plannerText: (lists) => plannerText(lists),
+  // Themes on the site itself: the real site wears what you're trying (see themes.js).
+  themesLive: (live) => (themesCtx.live = live),
+  // This copy's version, and whether the template has a newer one.
+  version: (again = false) => api('version' + (again ? '?again=1' : '')),
+  highlights: () => allHighlights(),
+  saveHighlights: (all) => saveHighlights(all),
+  // Notifications: your devices and choices, signing one up or off, a test.
+  push: {
+    status: () => api('push'),
+    subscribe: (subscription, device) => api('push/subscribe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ subscription, device }) }),
+    unsubscribe: (endpoint) => api('push/unsubscribe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ endpoint }) }),
+    settings: (body) => api('push/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+    test: () => api('push/test', { method: 'POST' })
+  },
+  // Notes between friends: your mail, sending one, marking them read, deleting one.
+  mail: {
+    list: () => api('mail'),
+    send: (friend, text, replyTo = '') => api('mail/send', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ friend, text, reply_to: replyTo }) }),
+    read: (ids, read = true) => api('mail/read', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids, read }) }),
+    remove: (id) => api('mail/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) })
+  },
+  // A comment from you on a friend's post (it goes on at their site, straight away).
+  friendComment: (friend, post, message, replyTo = '') => api('friends/comment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ friend, post, message, reply_to: replyTo }) })
+};

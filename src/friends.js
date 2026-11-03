@@ -9,19 +9,20 @@
 // - Every request between friends is signed with it (an HMAC of the method, path, time and
 //   body), so only a friend can read your friend feed or post to your inbox, and nobody can
 //   pretend to be them. Requests more than five minutes old are refused.
-// - There are no messages: friends only read each other's posts, presence and status.
+// - Notes between friends (mail) go only to the friend they're for, kept on their site for them alone.
 // - Your site's address is set once (the first time you open Friends). If your site moves to
 //   another address (a domain of your own, say), "My site has moved" tells each friend's site,
 //   signed with the secret you share; their site checks you really are at the new address
 //   before it switches, and still recognises the old one.
 // - When something friends see changes (a post published, edited or deleted, your status, a
 //   scheduled post going live), your site tells each friend's site straight away, and theirs
-//   reads your feed again. Every 10 minutes each site also reads its friends' feeds, in case
+//   reads your feed again. Every 20 minutes each site also reads its friends' feeds, in case
 //   one was offline when told. Your site keeps a copy of each feed. Their photos are fetched
 //   through your own site, so your browser never talks to theirs.
 // - Secrets and copies of feeds live under data/_ in your bucket, which the file list, the
 //   export and visitors never see.
 
+import * as push from './push.js';
 import { safeMarkdown, buildPost, TYPES, THEME_OPTIONS, KEEPSAKE_SHAPES, THEMES, THEME_CHARMS } from './content.js';
 import { cleanCards, OWN_CARD, MIX, cleanMix, cleanSeed } from '../public/js/card-parts.js';
 
@@ -30,6 +31,8 @@ const STORE = 'data/_friends.json';
 const SENT = 'data/_friendsent';
 const MAX_FRIENDS = 40;
 const MAX_PHOTOS = 12;
+// The newest comments on each post that go with it to friends' sites.
+const MAX_COMMENTS = 40;
 const SKEW = 5 * 60 * 1000;
 export const FRIEND_UA = 'MyCorner-Friends/1 (a friend site, following)';
 // 2: each post also comes in full (keepsakes, memories, flair and all), with your own keepsake
@@ -106,10 +109,12 @@ export async function loadFriends(env) {
   return {
     me: s.me || '',
     // What your site's visitors see of your friends: their posts and your friends list ("all"),
-    // just the list ("list"), or nothing: only you see them, in the back office ("off").
-    visibility: VISIBILITY.includes(s.visibility) ? s.visibility : s.showOnSite === false ? 'off' : 'all',
+    // just the list ("list"), or nothing: only you see them, signed in ("off", unless you choose).
+    visibility: VISIBILITY.includes(s.visibility) ? s.visibility : s.showOnSite === true ? 'all' : 'off',
+    // Whether their posts are mixed into your Home feed while you're signed in (only you see that).
+    inHome: s.inHome !== false,
     // Whether friends' sites may show your posts to their visitors (they always see them
-    // themselves, in their back office).
+    // themselves, signed in on their own site).
     letShare: s.letShare !== false,
     friends: Array.isArray(s.friends) ? s.friends : [],
     // Your friend code's secret (none while it's switched off).
@@ -170,7 +175,7 @@ async function verify(request, env, store, body, secrets) {
 
 const reply = (data, status = 200) => new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' } });
 
-// deps: { buildEverything, mediaForFriend, changed, waitUntil }
+// deps: { buildEverything, mediaForFriend, friendComment, changed, news, waitUntil }
 export async function friendsApi(request, env, path, deps) {
   const method = request.method;
   const body = method === 'POST' ? await request.text() : '';
@@ -204,7 +209,7 @@ export async function friendsApi(request, env, path, deps) {
 
   // Your friend feed: who you are, how you are, and your recent posts.
   if (path === '/api/friends/feed' && method === 'GET') {
-    const data = await deps.buildEverything(env);
+    const data = await deps.buildEverything(env, { forFriends: true });
     return reply({ ...friendFeed(data, store.me || new URL(request.url).origin), share: store.letShare });
   }
 
@@ -248,6 +253,31 @@ export async function friendsApi(request, env, path, deps) {
     return reply({ ok: true });
   }
 
+  // A friend commenting on one of your posts, from their own site: it goes straight on (they're
+  // your friend), under their name, linking to their site. (deps.friendComment keeps it.)
+  // A note from a friend ("You've got mail!"): kept for you, and nobody else, to read signed in.
+  if (path === '/api/friends/note' && method === 'POST') {
+    let info = {};
+    try {
+      info = JSON.parse(body);
+    } catch {}
+    const f = store.friends.find((x) => x.key === friend.key) || friend;
+    const out = await receiveNote(env, f, info);
+    return reply(out.ok ? { ok: true } : { error: out.error }, out.status || 200);
+  }
+
+  if (path === '/api/friends/comment' && method === 'POST' && deps.friendComment) {
+    let info = {};
+    try {
+      info = JSON.parse(body);
+    } catch {}
+    const f = store.friends.find((x) => x.key === friend.key) || friend;
+    const out = await deps.friendComment({ name: clean(f.owner || f.name, 40) || f.url, site: f.url }, { post: clean(info.post, 160), message: String(info.message ?? '').replace(/\r\n?/g, '\n').replace(/[\u0000-\u0009\u000b-\u001f\u007f]/g, '').trim().slice(0, 1000), reply_to: clean(info.reply_to, 41) });
+    // (Your site shows it at once, and your friends' sites hear: it's in your feed for them too.)
+    if (out.ok && deps.waitUntil) deps.waitUntil(Promise.resolve(deps.changed?.()).then(() => deps.news?.()).catch(() => {}));
+    return reply(out.ok ? { ok: true } : { error: out.error }, out.status || 200);
+  }
+
   // A photo from one of your published posts, for a friend's site to show.
   if (path === '/api/friends/media' && method === 'GET') {
     const key = new URL(request.url).searchParams.get('key') || '';
@@ -280,6 +310,8 @@ export function friendFeed(data, origin) {
     presence: site.presence,
     status: site.status,
     status_updated: site.status_updated,
+    // (Whether friends can comment on your posts: only while comments are on.)
+    comments_on: !!site.comments,
     posts: data.posts.slice(0, 30).map((p) => ({
       id: `${p.type}/${p.slug}`,
       type: p.type,
@@ -292,6 +324,8 @@ export function friendFeed(data, origin) {
       creator: p.creator || '',
       rating: p.rating ?? null,
       friends_only: !!p.friends_only,
+      // The comments on it that are on your site, so a friend can see the conversation (and join in).
+      comments: (p.comments || []).slice(-MAX_COMMENTS).map((c) => ({ id: c.id, name: c.name, date: c.date, message: c.message, reply: c.reply || '', reply_to: c.reply_to || '', site: c.site || '' })),
       // Your own photos only (as "type/post/file"), fetched through the friend's own site.
       photos: (p.photos || [])
         .filter((u) => String(u).startsWith('/media/'))
@@ -416,6 +450,29 @@ export function cardLook(theme) {
   return out;
 }
 
+// A comment on a friend's post, as their site sends it: plain text only, sizes capped.
+const COMMENT_ID = /^[A-Za-z0-9][A-Za-z0-9-]{0,40}$/;
+function tidyComment(c) {
+  return {
+    id: COMMENT_ID.test(String(c?.id || '')) ? String(c.id) : '',
+    name: clean(c?.name, 60),
+    date: clean(c?.date, 20),
+    message: clean(c?.message, 1000),
+    reply: clean(c?.reply, 1000),
+    reply_to: COMMENT_ID.test(String(c?.reply_to || '')) ? String(c.reply_to) : '',
+    site: linkOrigin(c?.site)
+  };
+}
+// (Just a site's address, shown as a link: http or https only.)
+function linkOrigin(v) {
+  try {
+    const u = new URL(String(v || ''));
+    return /^https?:$/.test(u.protocol) && !u.username && !u.password ? u.origin : '';
+  } catch {
+    return '';
+  }
+}
+
 // Tidies a feed from a friend's site before keeping it: plain values only, sizes capped.
 export function tidyFeed(f, friend) {
   const posts = (Array.isArray(f?.posts) ? f.posts : []).slice(0, 30).map((p) => ({
@@ -433,6 +490,7 @@ export function tidyFeed(f, friend) {
     creator: clean(p.creator, 80),
     rating: Number.isFinite(+p.rating) && p.rating !== null ? Math.max(0, Math.min(10, +p.rating)) : null,
     friends_only: !!p.friends_only,
+    comments: (Array.isArray(p.comments) ? p.comments : []).slice(-MAX_COMMENTS).map(tidyComment).filter((c) => c.id && c.message),
     photos: (Array.isArray(p.photos) ? p.photos : []).map((k) => clean(k, 200)).filter(photoKeyOk).slice(0, MAX_PHOTOS),
     captions: (Array.isArray(p.captions) ? p.captions : []).slice(0, MAX_PHOTOS).map((c) => words(clean(c, 200))),
     full: fullFrom(p, friend, clean(p.id, 120)),
@@ -446,6 +504,8 @@ export function tidyFeed(f, friend) {
     status_updated: Number(f?.status_updated) || null,
     // (Whether they let you show their posts to your visitors.)
     share: f?.share !== false,
+    // (Whether you can comment on their posts: a site new enough, with comments on.)
+    comments_on: f?.comments_on === true,
     posts,
     keepsakes: designsFrom(f?.keepsakes, friend),
     categories: categoriesFrom(f?.categories),
@@ -468,7 +528,18 @@ export async function refreshFriends(env, only) {
         const res = await signedFetch(env, store, friend, 'GET', '/api/friends/feed');
         if (!res.ok) throw new Error('status ' + res.status);
         const feed = tidyFeed(await res.json(), friend);
+        // (What you'd already seen of theirs, to tell you about anything new.)
+        const before = await readCache(env, friend.key);
         await env.CONTENT.put(`data/_friendcache/${friend.key}.json`, JSON.stringify({ at, ok: true, feed }));
+        if (before?.feed) {
+          const seen = new Set((before.feed.posts || []).map((p) => p.id));
+          const fresh = feed.posts.filter((p) => !seen.has(p.id) && Date.now() - (p.ts || 0) < 2 * 24 * 60 * 60 * 1000);
+          if (fresh.length) {
+            const who = feed.owner || feed.name || friend.name;
+            const p = fresh[0];
+            await push.notifyOwner(env, 'friends', { title: `${who} posted${fresh.length > 1 ? ` ${fresh.length} new things` : ''}`, body: p.title || p.excerpt || 'Have a look', url: '/?owner=1#/friends', tag: `friend-${friend.key}` }, store.me).catch(() => {});
+          }
+        }
         names[friend.key] = { name: feed.name, owner: feed.owner };
         reached++;
       } catch (e) {
@@ -497,7 +568,7 @@ export async function refreshFriends(env, only) {
 export async function shareNews(env, buildEverything) {
   const store = await loadFriends(env);
   if (!store.me || !store.friends.length) return { told: 0, of: 0 };
-  const data = await buildEverything(env);
+  const data = await buildEverything(env, { forFriends: true });
   const mark = await sha256(JSON.stringify({ ...friendFeed(data, store.me), share: store.letShare }));
   const before = await env.CONTENT.get(SENT).then((o) => (o ? o.text() : ''), () => '');
   if (before === mark) return { told: 0, of: store.friends.length };
@@ -521,7 +592,7 @@ export async function friendsOverview(env, here = '') {
   );
   // Friends who still know you by an old address (they couldn't be told you moved).
   const behind = store.friends.filter((f) => f.as && f.as !== store.me).map((f) => f.name);
-  return { me: store.me, here, behind, visibility: store.visibility, letShare: store.letShare, friends, code: codeText(store), codeOff: store.codeOff };
+  return { me: store.me, here, behind, visibility: store.visibility, letShare: store.letShare, inHome: store.inHome, friends, code: codeText(store), codeOff: store.codeOff };
 }
 
 const codeText = (store) => (store.code && store.me ? 'MYCORNER-' + b64url(enc.encode(JSON.stringify({ u: store.me, s: store.code.secret }))) : null);
@@ -622,6 +693,124 @@ export async function removeFriend(env, key) {
   await env.CONTENT.delete(`data/_friendcache/${key}.json`);
 }
 
+// You, commenting on a friend's post: sent to their site, signed, where it goes straight on.
+// Then their feed is read again, so you see it there too.
+export async function commentOnFriend(env, key, body) {
+  const store = await loadFriends(env);
+  const friend = store.friends.find((f) => f.key === key);
+  if (!friend) throw new Error('That friend isn’t on your list any more.');
+  const message = String(body.message ?? '').trim().slice(0, 1000);
+  if (message.length < 2) throw new Error('Write a comment first.');
+  let res;
+  try {
+    res = await signedFetch(env, store, friend, 'POST', '/api/friends/comment', { post: String(body.post || '').slice(0, 160), message, reply_to: String(body.reply_to || '').slice(0, 41) });
+  } catch {
+    throw new Error('Couldn’t reach their site just now. Try again in a moment.');
+  }
+  const out = await res.json().catch(() => ({}));
+  if (res.status === 404 && !out.error) throw new Error('Their site needs updating before it can take comments from friends.');
+  if (!res.ok) throw new Error(out.error === 'Not found' ? 'Their site needs updating before it can take comments from friends.' : out.error || 'Their site didn’t take that comment.');
+  await refreshFriends(env, key);
+  return { ok: true };
+}
+
+// ---------- notes between friends ("You've got mail!") ----------
+// A short note, sent by your site to a friend's, signed like everything else between them. It's
+// kept on their site for them alone (never on the site, never sent on), as a small file under
+// data/_mail. Your own copy of what you sent is kept too, so you can see the conversation.
+const MAIL = 'data/_mail/';
+const NOTE_MAX = 600;
+const MAIL_KEEP = 300;
+const noteText = (v) => String(v ?? '').replace(/\r\n?/g, '\n').replace(/[\u0000-\u0009\u000b-\u001f\u007f]/g, '').replace(/\n{3,}/g, '\n\n').trim().slice(0, NOTE_MAX);
+const noteId = () => `${Date.now().toString(36).padStart(9, '0')}-${b64url(crypto.getRandomValues(new Uint8Array(4)))}`;
+async function keepNote(env, note) {
+  await env.CONTENT.put(`${MAIL}${note.id}.json`, JSON.stringify(note), { httpMetadata: { contentType: 'application/json' } });
+  // Only the newest few hundred are kept.
+  const all = await listMail(env);
+  for (const old of all.slice(MAIL_KEEP)) await env.CONTENT.delete(old.key);
+}
+async function listMail(env) {
+  const out = [];
+  let cursor;
+  do {
+    const page = await env.CONTENT.list({ prefix: MAIL, cursor, limit: 1000 });
+    out.push(...page.objects);
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor);
+  // (Ids start with the time, so the newest sort last; newest first here.)
+  return out.sort((a, b) => b.key.localeCompare(a.key));
+}
+async function receiveNote(env, friend, info) {
+  const text = noteText(info.text);
+  if (text.length < 1) return { error: 'An empty note.', status: 400 };
+  // A friend can send plenty, but not a flood: twenty an hour.
+  const hour = Date.now() - 60 * 60 * 1000;
+  const recent = (await readMail(env, 60)).filter((n) => !n.out && n.friend === friend.key && n.at > hour);
+  if (recent.length >= 20) return { error: 'That’s a lot of notes in an hour. Try again later.', status: 429 };
+  const name = clean(friend.owner || friend.name, 60) || friend.url;
+  await keepNote(env, { id: noteId(), friend: friend.key, name, site: friend.url, text, at: Date.now(), read: false, reply_to: /^[0-9a-z]{9}-[\w-]{4,8}$/.test(String(info.reply_to || '')) ? String(info.reply_to) : '' });
+  await push.notifyOwner(env, 'notes', { title: `✉ A note from ${name}`, body: text, url: '/?owner=1&open=mail#/', tag: 'mail' }, (await loadFriends(env)).me).catch(() => {});
+  return { ok: true };
+}
+async function readMail(env, limit = MAIL_KEEP) {
+  const keys = (await listMail(env)).slice(0, limit);
+  const notes = await Promise.all(
+    keys.map(async (o) => {
+      try {
+        return JSON.parse(await (await env.CONTENT.get(o.key)).text());
+      } catch {
+        return null;
+      }
+    })
+  );
+  return notes.filter(Boolean);
+}
+// Your mail, for you signed in: every note, newest first, with who it's from (or to).
+export async function myMail(env) {
+  const store = await loadFriends(env);
+  const known = new Map(store.friends.map((f) => [f.key, f]));
+  const notes = await readMail(env);
+  return {
+    notes: notes.map((n) => ({ ...n, still: known.has(n.friend) })),
+    unread: notes.filter((n) => !n.out && !n.read).length,
+    friends: store.friends.map((f) => ({ key: f.key, name: f.owner || f.name, site: f.url }))
+  };
+}
+// You, sending a note to a friend.
+export async function sendNote(env, key, body) {
+  const store = await loadFriends(env);
+  const friend = store.friends.find((f) => f.key === key);
+  if (!friend) throw new Error('That friend isn’t on your list any more.');
+  const text = noteText(body.text);
+  if (!text) throw new Error('Write something first.');
+  const reply_to = String(body.reply_to || '').slice(0, 20);
+  let res;
+  try {
+    res = await signedFetch(env, store, friend, 'POST', '/api/friends/note', { text, reply_to });
+  } catch {
+    throw new Error('Couldn’t reach their site just now. Try again in a moment.');
+  }
+  const out = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(out.error === 'Not found' ? 'Their site needs updating before it can take notes.' : out.error || 'Their site didn’t take that note.');
+  await keepNote(env, { id: noteId(), out: true, friend: friend.key, name: friend.owner || friend.name, site: friend.url, text, at: Date.now(), read: true, reply_to });
+  return { ok: true };
+}
+// Marks notes as read (some, or all of them), or deletes one.
+export async function markMail(env, ids, read = true) {
+  const want = ids === 'all' ? null : new Set((Array.isArray(ids) ? ids : [ids]).map(String));
+  for (const n of await readMail(env)) {
+    if (n.out || n.read === read || (want && !want.has(n.id))) continue;
+    n.read = read;
+    await env.CONTENT.put(`${MAIL}${n.id}.json`, JSON.stringify(n), { httpMetadata: { contentType: 'application/json' } });
+  }
+  return { ok: true };
+}
+export async function deleteNote(env, id) {
+  if (!/^[0-9a-z]{9}-[\w-]{4,8}$/.test(String(id))) throw new Error('No such note.');
+  await env.CONTENT.delete(`${MAIL}${id}.json`);
+  return { ok: true };
+}
+
 // What visitors see of your friends, and whether your friends' sites may show your posts.
 // (showOnSite: true/false is the older way of saying "all" or "off".)
 export async function setFriendSettings(env, body) {
@@ -629,10 +818,11 @@ export async function setFriendSettings(env, body) {
   if (VISIBILITY.includes(body.visibility)) store.visibility = body.visibility;
   else if (typeof body.showOnSite === 'boolean') store.visibility = body.showOnSite ? 'all' : 'off';
   if (typeof body.letShare === 'boolean') store.letShare = body.letShare;
+  if (typeof body.inHome === 'boolean') store.inHome = body.inHome;
   delete store.showOnSite;
   await saveFriends(env, store);
   // (Friends' sites hear about a change to letShare at once: see shareNews.)
-  return { visibility: store.visibility, letShare: store.letShare };
+  return { visibility: store.visibility, letShare: store.letShare, inHome: store.inHome };
 }
 // A friend's posts can go on your site only if you show posts and they've said yes.
 const postsShown = (store, feed) => store.visibility === 'all' && feed?.share !== false;
@@ -651,12 +841,14 @@ export async function friendPhoto(env, key, photoKey) {
   return new Response(res.body, { headers: { 'Content-Type': type, 'Cache-Control': 'private, max-age=10800' } });
 }
 
-// For your site's visitors (unless you've turned it off): your buddies' names, presence and
-// status, and their latest posts as one feed, newest first. Their photos go through your own
-// site (see friendPhotoForVisitor), as the site only ever loads pictures from itself.
-export async function publicFriends(env) {
+// For your site's visitors (if you show them): your buddies' names, presence and status, and
+// their latest posts as one feed, newest first. Their photos go through your own site (see
+// friendPhotoForVisitor), as the site only ever loads pictures from itself.
+// `mine`: for you, signed in: everything, whoever else sees it, with friends-only posts and the
+// comments on each post (and whether you can add one).
+export async function publicFriends(env, { mine = false } = {}) {
   const store = await loadFriends(env);
-  if (store.visibility === 'off' || !store.friends.length) return { buddies: [], posts: [], looks: {}, postsShown: store.visibility === 'all' };
+  if ((store.visibility === 'off' && !mine) || !store.friends.length) return { buddies: [], posts: [], looks: {}, postsShown: store.visibility === 'all', inHome: store.inHome, ...(mine ? { me: store.me } : {}) };
   const caches = await Promise.all(store.friends.map((f) => readCache(env, f.key)));
   const buddies = [];
   const posts = [];
@@ -668,25 +860,28 @@ export async function publicFriends(env) {
     const c = caches[i];
     const feed = c?.feed;
     const fresh = c && c.ok !== false && Date.now() - (c.at || 0) < 3 * 60 * 60 * 1000;
-    const who = { name: feed?.name || f.name, owner: feed?.owner || f.owner, url: f.url };
+    const who = { name: feed?.name || f.name, owner: feed?.owner || f.owner, url: f.url, ...(mine ? { key: f.key, comments_on: !!feed?.comments_on } : {}) };
     buddies.push({ ...who, presence: fresh ? feed?.presence || 'online' : 'offline', status: feed?.status || '' });
-    if (!postsShown(store, feed)) return;
+    if (!mine && !postsShown(store, feed)) return;
     keepsakes.push(...(feed?.keepsakes || []));
     categories.push(...(feed?.categories || []));
     const look = feed?.cards_look ? `f${i}` : '';
     if (look) looks[look] = feed.cards_look;
     const from = look ? { ...who, look } : who;
     for (const p of feed?.posts || []) {
+      // (Friends-only posts are for you, signed in: never on your site.)
+      if (p.friends_only && !mine) continue;
       const photos = p.photos.map((k) => `/friends-media/${encodeURIComponent(f.key)}/${k.split('/').map(encodeURIComponent).join('/')}`);
       // (In full: drawn as it looks on their site, with these photos and their own writing.)
       const full = p.full ? { ...p.full, title: words(p.title), date: words(p.date), ts: p.ts, html: p.html, excerpt: p.excerpt, photos, captions: p.captions || [] } : null;
       // (A card of their own making, from a site that didn't send its cards: the theme's here.)
       if (full && !look && OWN_CARD.test(full.card || '')) full.card = '';
-      posts.push({ ...p, friend: from, photos, full });
+      const { comments, ...rest } = p;
+      posts.push({ ...rest, ...(mine ? { comments: comments || [] } : {}), friend: from, photos, full });
     }
   });
   posts.sort((a, b) => b.ts - a.ts);
-  return { buddies, posts: posts.slice(0, 60), keepsakes, categories, looks, postsShown: store.visibility === 'all' };
+  return { buddies, posts: posts.slice(0, 60), keepsakes, categories, looks, postsShown: store.visibility === 'all', inHome: store.inHome, ...(mine ? { me: store.me } : {}) };
 }
 
 async function readCache(env, key) {
@@ -699,13 +894,15 @@ async function readCache(env, key) {
 }
 
 // A visitor's browser asking for a photo in your Friends feed: only photos of posts that are in
-// the feed you're showing, fetched from your friend's site by yours.
-export async function friendPhotoForVisitor(env, key, photoKey) {
+// the feed you're showing, fetched from your friend's site by yours. (`mine`: you, signed in,
+// see the photos of every post of theirs you have.)
+export async function friendPhotoForVisitor(env, key, photoKey, mine = false) {
   const store = await loadFriends(env);
   const friend = store.friends.find((f) => f.key === key);
   const cached = friend ? (await readCache(env, key))?.feed : null;
-  const feed = postsShown(store, cached) ? cached : null;
-  if (!feed || !(feed.posts || []).some((p) => p.photos.includes(photoKey))) return new Response('Not found', { status: 404 });
+  const feed = mine || postsShown(store, cached) ? cached : null;
+  // (Not a friends-only post's: those are for you, signed in.)
+  if (!feed || !(feed.posts || []).some((p) => p.photos.includes(photoKey) && (mine || !p.friends_only))) return new Response('Not found', { status: 404 });
   return friendPhoto(env, key, photoKey);
 }
 
